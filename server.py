@@ -326,7 +326,7 @@ class MasterDnsVPNServer:
                 for sid in expired_sessions:
                     try:
                         await self._close_session(sid)
-                        self.logger.info(
+                        self.logger.debug(
                             f"<yellow>Closed inactive session ID: <cyan>{sid}</cyan></yellow>"
                         )
                     except Exception as e:
@@ -791,7 +791,7 @@ class MasterDnsVPNServer:
 
             async def _connect_and_handshake():
                 if getattr(self, "use_external_socks5", False):
-                    self.logger.info(
+                    self.logger.debug(
                         f"<green>Forwarding to External SOCKS5 <blue>{self.forward_ip}:{self.forward_port}</blue> for target <cyan>{target_ip}:{target_port}</cyan> (Stream {stream_id})</green>"
                     )
                     c_reader, c_writer = await asyncio.open_connection(
@@ -850,7 +850,7 @@ class MasterDnsVPNServer:
 
                     return c_reader, c_writer
                 else:
-                    self.logger.info(
+                    self.logger.debug(
                         f"<green>SOCKS5 Fast-Connecting directly to <blue>{target_ip}:{target_port}</blue> for stream <cyan>{stream_id}</cyan></green>"
                     )
                     return await asyncio.open_connection(target_ip, target_port)
@@ -1164,7 +1164,7 @@ class MasterDnsVPNServer:
         if len(session["closed_streams"]) > 1000:
             session["closed_streams"].pop(next(iter(session["closed_streams"])))
 
-        self.logger.info(
+        self.logger.debug(
             f"<yellow>Closing Stream <cyan>{stream_id}</cyan> in Session <cyan>{session_id}</cyan>. Reason: <yellow>{reason}</yellow></yellow>"
         )
 
@@ -1366,7 +1366,7 @@ class MasterDnsVPNServer:
             await self._server_enqueue_tx(
                 session_id, 2, stream_id, 0, syn_data, is_syn_ack=True
             )
-            self.logger.info(
+            self.logger.debug(
                 f"<green>Stream <cyan>{stream_id}</cyan> connected to Forward Target: <blue>{self.forward_ip}:{self.forward_port}</blue> for Session <cyan>{session_id}</cyan></green>"
             )
         except Exception as e:

@@ -1486,7 +1486,7 @@ class MasterDnsVPNClient:
 
                     writer.write(b"\x01\x00")  # Auth success
                     await writer.drain()
-                    self.logger.info(
+                    self.logger.debug(
                         f"<green>🔓 SOCKS5 Auth successful for user: <cyan>{uname.decode()}</cyan> from IP: <cyan>{client_IP}</cyan></green>"
                     )
                 else:
@@ -1673,7 +1673,7 @@ class MasterDnsVPNClient:
             initial_data=target_payload,
         )
         stream_data["stream"] = stream
-        self.logger.info(
+        self.logger.debug(
             f"<green>SOCKS5 Stream <cyan>{stream_id}</cyan> Created and queued SOCKS5_SYN chunks.</green>"
         )
         self._send_ping_packet()
@@ -2047,7 +2047,7 @@ class MasterDnsVPNClient:
                 )
 
                 stream_data["stream"] = stream
-                self.logger.info(
+                self.logger.debug(
                     f"<blue>Stream <cyan>{stream_id}</cyan> Established with server.</blue>"
                 )
             finally:
@@ -2066,7 +2066,7 @@ class MasterDnsVPNClient:
                 and not stream_obj.socks_connected.is_set()
             ):
                 stream_obj.socks_connected.set()
-                self.logger.info(
+                self.logger.debug(
                     f"<green>Socks5 Stream <cyan>{stream_id}</cyan> connection established.</green>"
                 )
             self._send_ping_packet()
@@ -2127,7 +2127,7 @@ class MasterDnsVPNClient:
                         and not stream_obj.socks_connected.is_set()
                     ):
                         stream_obj.socks_connected.set()
-                        self.logger.info(
+                        self.logger.debug(
                             f"<green>Socks5 Stream <cyan>{b_stream_id}</cyan> connection established.</green>"
                         )
             self._send_ping_packet()
@@ -2153,7 +2153,7 @@ class MasterDnsVPNClient:
         ):
             stream_data["handshake_event"].set()
 
-        self.logger.info(
+        self.logger.debug(
             f"<yellow>Closing Client Stream <cyan>{stream_id}</cyan>. Reason: <yellow>{reason}</yellow></yellow>"
         )
 
