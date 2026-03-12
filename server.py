@@ -1064,18 +1064,15 @@ class MasterDnsVPNServer(PacketQueueMixin):
 
         main_queue = session.get("main_queue")
 
-        active_streams = [
-            sid for sid, sdata in streams.items() if sdata.get("tx_queue")
-        ]
+        active_entries = [sdata for sdata in streams.values() if sdata.get("tx_queue")]
 
-        if active_streams:
-            num_active = len(active_streams)
+        if active_entries:
+            num_active = len(active_entries)
             rr_index = session.get("round_robin_index", 0)
             if rr_index >= num_active:
                 rr_index = 0
 
-            selected_sid = active_streams[rr_index]
-            selected_stream_data = streams[selected_sid]
+            selected_stream_data = active_entries[rr_index]
             t_queue = selected_stream_data["tx_queue"]
 
             if main_queue and main_queue[0][0] < t_queue[0][0]:
@@ -1116,10 +1113,8 @@ class MasterDnsVPNServer(PacketQueueMixin):
                 candidate_queues = []
                 if main_queue:
                     candidate_queues.append((main_queue, session))
-                for sid in active_streams:
-                    sdata = streams.get(sid)
-                    if sdata and sdata.get("tx_queue"):
-                        candidate_queues.append((sdata["tx_queue"], sdata))
+                for sdata in active_entries:
+                    candidate_queues.append((sdata["tx_queue"], sdata))
 
                 while blocks < max_blocks:
                     packed_any = False
@@ -1837,9 +1832,11 @@ class MasterDnsVPNServer(PacketQueueMixin):
         """Background task to handle ARQ retransmissions for all active streams (Crash-Proof)."""
         while not self.should_stop.is_set():
             try:
-                await asyncio.sleep(0.5)
+                sessions = self.sessions
+                sleep_interval = 0.5 if sessions else 1.5
+                await asyncio.sleep(sleep_interval)
                 now = time.monotonic()
-                for session_id, session in list(self.sessions.items()):
+                for session_id, session in list(sessions.items()):
                     streams = session.get("streams", {})
                     if not streams:
                         continue

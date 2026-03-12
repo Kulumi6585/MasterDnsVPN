@@ -483,7 +483,7 @@ class ARQ:
         _sleep = asyncio.sleep
         try:
             while not self.closed:
-                interval = max(
+                base_interval = max(
                     0.05,
                     min(
                         self.rto,
@@ -492,6 +492,13 @@ class ARQ:
                         else self.rto,
                     )
                     / 3.0,
+                )
+                has_pending = bool(self.snd_buf) or (
+                    self.enable_control_reliability and bool(self.control_snd_buf)
+                )
+
+                interval = (
+                    base_interval if has_pending else max(0.2, base_interval * 4.0)
                 )
                 await _sleep(interval)
                 if self.closed:

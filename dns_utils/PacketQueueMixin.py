@@ -11,6 +11,20 @@ from dns_utils.DNS_ENUMS import Packet_Type
 class PacketQueueMixin:
     """Shared queue/priority bookkeeping for client and server packet schedulers."""
 
+    _PRIORITY_ZERO_TYPES = {
+        Packet_Type.STREAM_DATA_ACK,
+        Packet_Type.STREAM_RST,
+        Packet_Type.STREAM_RST_ACK,
+        Packet_Type.STREAM_FIN_ACK,
+        Packet_Type.STREAM_SYN_ACK,
+        Packet_Type.SOCKS5_SYN_ACK,
+    }
+    _SYN_TRACK_TYPES = {
+        Packet_Type.STREAM_SYN,
+        Packet_Type.STREAM_SYN_ACK,
+        Packet_Type.SOCKS5_SYN_ACK,
+    }
+
     def _inc_priority_counter(self, owner: dict, priority: int) -> None:
         counters = owner.setdefault("priority_counts", {})
         p = int(priority)
@@ -30,21 +44,31 @@ class PacketQueueMixin:
     def _release_tracking_on_pop(self, owner: dict, packet_type: int, sn: int) -> None:
         ptype = int(packet_type)
         if ptype in (Packet_Type.STREAM_DATA, Packet_Type.SOCKS5_SYN):
-            owner.get("track_data", set()).discard(sn)
+            track_data = owner.get("track_data")
+            if track_data is not None:
+                track_data.discard(sn)
         elif ptype == Packet_Type.STREAM_DATA_ACK:
-            owner.get("track_ack", set()).discard(sn)
+            track_ack = owner.get("track_ack")
+            if track_ack is not None:
+                track_ack.discard(sn)
         elif ptype == Packet_Type.STREAM_RESEND:
-            owner.get("track_resend", set()).discard(sn)
+            track_resend = owner.get("track_resend")
+            if track_resend is not None:
+                track_resend.discard(sn)
         elif ptype == Packet_Type.STREAM_FIN:
-            owner.get("track_fin", set()).discard(ptype)
-            owner.get("track_types", set()).discard(ptype)
-        elif ptype in (
-            Packet_Type.STREAM_SYN,
-            Packet_Type.STREAM_SYN_ACK,
-            Packet_Type.SOCKS5_SYN_ACK,
-        ):
-            owner.get("track_syn_ack", set()).discard(ptype)
-            owner.get("track_types", set()).discard(ptype)
+            track_fin = owner.get("track_fin")
+            if track_fin is not None:
+                track_fin.discard(ptype)
+            track_types = owner.get("track_types")
+            if track_types is not None:
+                track_types.discard(ptype)
+        elif ptype in self._SYN_TRACK_TYPES:
+            track_syn_ack = owner.get("track_syn_ack")
+            if track_syn_ack is not None:
+                track_syn_ack.discard(ptype)
+            track_types = owner.get("track_types")
+            if track_types is not None:
+                track_types.discard(ptype)
 
     def _on_queue_pop(self, owner: dict, queue_item: tuple) -> None:
         priority, _, ptype, _, sn, _ = queue_item
@@ -89,14 +113,7 @@ class PacketQueueMixin:
     def _effective_priority_for_packet(self, packet_type: int, priority: int) -> int:
         ptype = int(packet_type)
         eff = int(priority)
-        if ptype in (
-            Packet_Type.STREAM_DATA_ACK,
-            Packet_Type.STREAM_RST,
-            Packet_Type.STREAM_RST_ACK,
-            Packet_Type.STREAM_FIN_ACK,
-            Packet_Type.STREAM_SYN_ACK,
-            Packet_Type.SOCKS5_SYN_ACK,
-        ):
+        if ptype in self._PRIORITY_ZERO_TYPES:
             return 0
         if ptype == Packet_Type.STREAM_FIN:
             return 4
@@ -112,12 +129,7 @@ class PacketQueueMixin:
                 return False
             owner.setdefault("track_resend", set()).add(sn)
             return True
-        if ptype in (
-            Packet_Type.STREAM_FIN,
-            Packet_Type.STREAM_SYN,
-            Packet_Type.STREAM_SYN_ACK,
-            Packet_Type.SOCKS5_SYN_ACK,
-        ):
+        if ptype == Packet_Type.STREAM_FIN or ptype in self._SYN_TRACK_TYPES:
             if ptype in owner.get("track_types", set()):
                 return False
             owner.setdefault("track_types", set()).add(ptype)
