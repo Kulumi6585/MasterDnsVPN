@@ -869,12 +869,39 @@ class MasterDnsVPNServer(PacketQueueMixin):
             return
 
         stream_data = session.get("streams", {}).get(stream_id)
-        if not (stream_data and stream_data.get("status") == "CONNECTED"):
+        if not stream_data:
+            return
+
+        # Data-plane traffic must continue to drain while the stream is moving
+        # through graceful close states, otherwise late DATA/ACK packets get
+        # dropped and the close path degenerates into resets/timeouts.
+        if stream_data.get("status") not in (
+            "CONNECTED",
+            "DRAINING",
+            "CLOSING",
+            "TIME_WAIT",
+        ):
+            await self._enqueue_packet(
+                session_id,
+                0,
+                stream_id,
+                0,
+                Packet_Type.STREAM_RST,
+                b"",
+            )
             return
 
         stream_data["last_activity"] = now_mono
         arq = stream_data.get("arq_obj")
         if not arq:
+            await self._enqueue_packet(
+                session_id,
+                0,
+                stream_id,
+                0,
+                Packet_Type.STREAM_RST,
+                b"",
+            )
             return
 
         diff = (sn - arq.rcv_nxt) & 65535
@@ -897,7 +924,15 @@ class MasterDnsVPNServer(PacketQueueMixin):
             return
 
         stream_data = session.get("streams", {}).get(stream_id)
-        if not (stream_data and stream_data.get("status") == "CONNECTED"):
+        if not stream_data:
+            return
+
+        if stream_data.get("status") not in (
+            "CONNECTED",
+            "DRAINING",
+            "CLOSING",
+            "TIME_WAIT",
+        ):
             return
 
         stream_data["last_activity"] = now_mono

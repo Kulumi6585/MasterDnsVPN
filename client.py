@@ -2793,6 +2793,7 @@ class MasterDnsVPNClient(PacketQueueMixin):
             "status": "PENDING",
             "stream": None,
             "stream_creating": False,
+            "pending_inbound_data": {},
             "tx_queue": [],
             "initial_payload": target_payload,
             "priority_counts": {},
@@ -2830,9 +2831,7 @@ class MasterDnsVPNClient(PacketQueueMixin):
                     packet_name = self._packet_type_names.get(
                         int(socks_err_ptype), str(socks_err_ptype)
                     )
-                    raise ConnectionError(
-                        f"SOCKS handshake failed ({packet_name})"
-                    )
+                    raise ConnectionError(f"SOCKS handshake failed ({packet_name})")
 
                 if stream_data.get("status") == "ACTIVE":
                     if writer and not writer.is_closing():
@@ -3375,6 +3374,12 @@ class MasterDnsVPNClient(PacketQueueMixin):
                 )
                 stream_data["stream"] = stream
                 stream_data.pop("socks_error_packet", None)
+                pending_inbound = stream_data.pop("pending_inbound_data", {})
+                if pending_inbound:
+                    for pending_sn in sorted(pending_inbound):
+                        pending_payload = pending_inbound.get(pending_sn, b"")
+                        if pending_payload:
+                            await stream.receive_data(pending_sn, pending_payload)
                 self.logger.debug(
                     f"<blue>Stream <cyan>{stream_id}</cyan> Established with server.</blue>"
                 )
@@ -3413,14 +3418,29 @@ class MasterDnsVPNClient(PacketQueueMixin):
             and data
         ):
             arq = stream_data.get("stream")
-            if arq:
+            status = stream_data.get("status")
+            if arq and status in (
+                "ACTIVE",
+                "DRAINING",
+                "CLOSING",
+                "TIME_WAIT",
+            ):
                 await arq.receive_data(sn, data)
+            elif not arq and status == "PENDING":
+                stream_data.setdefault("pending_inbound_data", {}).setdefault(sn, data)
+            else:
+                await self._enqueue_packet(0, stream_id, 0, Packet_Type.STREAM_RST, b"")
             self._send_ping_packet()
             return
 
         if ptype == Packet_Type.STREAM_DATA_ACK and stream_id_exists:
             arq = stream_data.get("stream")
-            if arq:
+            if arq and stream_data.get("status") in (
+                "ACTIVE",
+                "DRAINING",
+                "CLOSING",
+                "TIME_WAIT",
+            ):
                 await arq.receive_ack(sn)
             self._send_ping_packet()
             return
@@ -3598,6 +3618,7 @@ class MasterDnsVPNClient(PacketQueueMixin):
             stream_data.get("track_seq_packets", set()).clear()
             stream_data.get("track_fragment_packets", set()).clear()
             stream_data.get("priority_counts", {}).clear()
+            stream_data.get("pending_inbound_data", {}).clear()
             stream_data["status"] = "TIME_WAIT"
             stream_data["close_time"] = time.monotonic()
             self._deactivate_response_queue(stream_id)
