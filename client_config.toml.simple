@@ -42,7 +42,9 @@ SOCKS5_USER = "master_dns_vpn"
 SOCKS5_PASS = "master_dns_vpn"
 
 # Maximum time (seconds) allowed for SOCKS handshake completion per stream.
-SOCKS_HANDSHAKE_TIMEOUT = 240.0
+# For high-loss / slow-resolver networks, use a slightly larger timeout to
+# avoid aborting streams that are still progressing slowly.
+SOCKS_HANDSHAKE_TIMEOUT = 300.0
 
 # ------------------------------------------------------------------------------
 # 3) Resolver Selection & DNS Strategy
@@ -52,7 +54,8 @@ SOCKS_HANDSHAKE_TIMEOUT = 240.0
 # This file must exist next to client executable/config file.
 
 # Send each DNS query N times for reliability in lossy networks.
-# 1 = no duplication.
+# 1 = no duplication. 2 is the recommended starting point for unstable links.
+# Higher values increase bandwidth/CPU pressure quickly.
 PACKET_DUPLICATION_COUNT = 2
 
 # Max packet/control blocks packed per DNS operation (user upper bound).
@@ -212,5 +215,5 @@ LOG_LEVEL = "INFO"
 # ------------------------------------------------------------------------------
 # 7) Version Marker
 # ------------------------------------------------------------------------------
-CONFIG_VERSION = 4.0
+CONFIG_VERSION = 5.0
 

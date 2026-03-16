@@ -159,8 +159,14 @@ class MasterDnsVPNServer(PacketQueueMixin):
         self.socks_handshake_timeout = float(
             self.config.get("SOCKS_HANDSHAKE_TIMEOUT", 120.0)
         )
+        self.max_concurrent_socks_connects = max(
+            1, int(self.config.get("MAX_CONCURRENT_SOCKS_CONNECTS", 64))
+        )
         self.max_concurrent_requests = asyncio.Semaphore(
             int(self.config.get("MAX_CONCURRENT_REQUESTS", 1000))
+        )
+        self.socks_connect_semaphore = asyncio.Semaphore(
+            self.max_concurrent_socks_connects
         )
 
         self.supported_upload_compression_types = (
@@ -1964,6 +1970,7 @@ class MasterDnsVPNServer(PacketQueueMixin):
         forward_port = self.forward_port
         socks5_auth = self.socks5_auth
         logger = self.logger
+        acquired_connect_slot = False
 
         try:
             if not target_payload or len(target_payload) < 3:
@@ -2070,10 +2077,30 @@ class MasterDnsVPNServer(PacketQueueMixin):
                     )
                     return await asyncio.open_connection(target_ip, target_port)
 
+            while not self.should_stop.is_set():
+                if stream_data.get("status") in ("CLOSING", "TIME_WAIT"):
+                    return
+                try:
+                    await asyncio.wait_for(
+                        self.socks_connect_semaphore.acquire(), timeout=1.0
+                    )
+                    acquired_connect_slot = True
+                    stream_data["last_activity"] = time.monotonic()
+                    break
+                except asyncio.TimeoutError:
+                    stream_data["last_activity"] = time.monotonic()
+
+            if not acquired_connect_slot:
+                return
+
             try:
-                reader, writer = await asyncio.wait_for(
-                    _connect_and_handshake(), timeout=45.0
-                )
+                try:
+                    reader, writer = await asyncio.wait_for(
+                        _connect_and_handshake(), timeout=45.0
+                    )
+                finally:
+                    self.socks_connect_semaphore.release()
+                    acquired_connect_slot = False
             except asyncio.TimeoutError as timeout_exc:
                 raise timeout_exc
 
@@ -2153,6 +2180,9 @@ class MasterDnsVPNServer(PacketQueueMixin):
                 reason=f"SOCKS target unreachable: {e}",
                 abortive=True,
             )
+        finally:
+            if acquired_connect_slot:
+                self.socks_connect_semaphore.release()
 
     async def _send_parser_response(self, builder, data, addr=None):
         if addr is None:
