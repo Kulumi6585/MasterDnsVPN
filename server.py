@@ -829,12 +829,14 @@ class MasterDnsVPNServer(PacketQueueMixin):
                 for sid in expired_closed:
                     self.recently_closed_sessions.pop(sid, None)
 
-                expired_invalid_cookie = [
-                    tracker_key
-                    for tracker_key, attempts in self.invalid_cookie_tracker.items()
-                    if not attempts
-                    or attempts[-1] < (now - self.invalid_cookie_window_seconds)
-                ]
+                cutoff = now - self.invalid_cookie_window_seconds
+                expired_invalid_cookie = []
+                for tracker_key, attempts in tuple(self.invalid_cookie_tracker.items()):
+                    while attempts and attempts[0] < cutoff:
+                        attempts.popleft()
+                    if not attempts:
+                        expired_invalid_cookie.append(tracker_key)
+
                 for tracker_key in expired_invalid_cookie:
                     self.invalid_cookie_tracker.pop(tracker_key, None)
             except asyncio.CancelledError:
