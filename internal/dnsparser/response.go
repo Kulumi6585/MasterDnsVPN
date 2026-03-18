@@ -52,6 +52,14 @@ func BuildServerFailureResponseFromLite(request []byte, parsed LitePacket) ([]by
 	return buildResponseWithRCodeLite(request, parsed, Enums.DNSR_CODE_SERVER_FAILURE)
 }
 
+func BuildNotImplementedResponse(request []byte) ([]byte, error) {
+	return buildResponseWithRCode(request, Enums.DNSR_CODE_NOT_IMPLEMENTED)
+}
+
+func BuildNotImplementedResponseFromLite(request []byte, parsed LitePacket) ([]byte, error) {
+	return buildResponseWithRCodeLite(request, parsed, Enums.DNSR_CODE_NOT_IMPLEMENTED)
+}
+
 func buildResponseWithRCode(request []byte, rcode uint8) ([]byte, error) {
 	if len(request) < dnsHeaderSize {
 		return nil, ErrPacketTooShort

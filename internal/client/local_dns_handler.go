@@ -40,10 +40,18 @@ func (c *Client) handleDNSQueryPacket(query []byte) ([]byte, *dnsDispatchRequest
 		}
 		return response, nil
 	}
+	if !isSupportedDNSQuery(metadata.QType, metadata.QClass) {
+		response, err := DnsParser.BuildNotImplementedResponseFromLite(query, metadata.Parsed)
+		if err != nil {
+			return nil, nil
+		}
+		return response, nil
+	}
 
 	cacheKey := dnscache.BuildKey(metadata.Domain, metadata.QType, metadata.QClass)
 	now := c.now()
 	if cached, ok := c.localDNSCache.GetReady(cacheKey, query, now); ok {
+		c.dnsInflight.Complete(cacheKey)
 		return cached, nil
 	}
 
@@ -55,6 +63,9 @@ func (c *Client) handleDNSQueryPacket(query []byte) ([]byte, *dnsDispatchRequest
 	if !result.DispatchNeeded {
 		return response, nil
 	}
+	if !c.dnsInflight.Begin(cacheKey, now) {
+		return response, nil
+	}
 
 	dispatch := &dnsDispatchRequest{
 		CacheKey: append([]byte(nil), cacheKey...),
@@ -64,6 +75,32 @@ func (c *Client) handleDNSQueryPacket(query []byte) ([]byte, *dnsDispatchRequest
 		QClass:   metadata.QClass,
 	}
 	return response, dispatch
+}
+
+func isSupportedDNSQuery(qType uint16, qClass uint16) bool {
+	if qClass != 1 {
+		return false
+	}
+
+	switch qType {
+	case
+		1,   // A
+		28,  // AAAA
+		5,   // CNAME
+		15,  // MX
+		2,   // NS
+		16,  // TXT
+		12,  // PTR
+		33,  // SRV
+		65,  // HTTPS
+		64,  // SVCB
+		257, // CAA
+		35,  // NAPTR
+		6:   // SOA
+		return true
+	default:
+		return false
+	}
 }
 
 func parseDNSQueryMetadata(query []byte) (dnsQueryMetadata, bool) {

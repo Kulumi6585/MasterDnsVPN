@@ -30,6 +30,7 @@ type Client struct {
 	connections      []Connection
 	connectionsByKey map[string]int
 	localDNSCache    *dnscache.Store
+	dnsInflight      *dnsInflightManager
 
 	successMTUChecks    bool
 	sessionID           uint8
@@ -82,6 +83,9 @@ func New(cfg config.ClientConfig, log *logger.Logger, codec *security.Codec) *Cl
 			cfg.LocalDNSCacheMaxRecords,
 			time.Duration(cfg.LocalDNSCacheTTLSeconds*float64(time.Second)),
 			time.Duration(cfg.LocalDNSPendingTimeoutSec*float64(time.Second)),
+		),
+		dnsInflight: newDNSInflightManager(
+			time.Duration(cfg.LocalDNSPendingTimeoutSec * float64(time.Second)),
 		),
 	}
 	c.ResetRuntimeState(true)

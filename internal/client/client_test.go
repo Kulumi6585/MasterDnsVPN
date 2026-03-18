@@ -296,6 +296,41 @@ func TestHandleDNSQueryPacketUsesReadyCache(t *testing.T) {
 	}
 }
 
+func TestHandleDNSQueryPacketRejectsUnsupportedQueryType(t *testing.T) {
+	c := New(config.ClientConfig{}, nil, nil)
+	query := buildClientTestDNSQuery(0x1234, "example.com", Enums.DNS_RECORD_TYPE_ANY, Enums.DNSQ_CLASS_IN)
+
+	response, dispatch := c.handleDNSQueryPacket(query)
+	if dispatch != nil {
+		t.Fatal("unsupported query should not dispatch")
+	}
+	if len(response) < 4 {
+		t.Fatal("expected not-implemented response")
+	}
+	if got := binary.BigEndian.Uint16(response[2:4]) & 0x000F; got != Enums.DNSR_CODE_NOT_IMPLEMENTED {
+		t.Fatalf("unexpected rcode: got=%d want=%d", got, Enums.DNSR_CODE_NOT_IMPLEMENTED)
+	}
+}
+
+func TestHandleDNSQueryPacketDedupesInflightDispatch(t *testing.T) {
+	c := New(config.ClientConfig{
+		LocalDNSPendingTimeoutSec: 30,
+	}, nil, nil)
+	now := time.Unix(1700000000, 0)
+	c.now = func() time.Time { return now }
+
+	query := buildClientTestDNSQuery(0x1234, "example.com", Enums.DNS_RECORD_TYPE_A, Enums.DNSQ_CLASS_IN)
+	_, dispatch := c.handleDNSQueryPacket(query)
+	if dispatch == nil {
+		t.Fatal("first query should dispatch")
+	}
+
+	_, dispatch = c.handleDNSQueryPacket(query)
+	if dispatch != nil {
+		t.Fatal("second inflight query should not dispatch again")
+	}
+}
+
 func TestHandleDNSQueryPacketRejectsMalformedQuery(t *testing.T) {
 	c := New(config.ClientConfig{}, nil, nil)
 	response, dispatch := c.handleDNSQueryPacket([]byte{0x12, 0x34, 0x00})
