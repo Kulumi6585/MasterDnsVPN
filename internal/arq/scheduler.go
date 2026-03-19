@@ -9,7 +9,6 @@ package arq
 
 import (
 	"container/heap"
-	"math/bits"
 
 	Enums "masterdnsvpn-go/internal/enums"
 )
@@ -50,15 +49,13 @@ type Scheduler struct {
 	nextOrder       uint64
 	totalQueued     int
 	pingQueued      int
-	activeMask      uint64
+	activeOwners    activeRoster
 	owners          map[uint16]*queueOwner
-	rosters         [maxSchedulerPriority + 1]activeRoster
 }
 
 type queueOwner struct {
 	streamID        uint16
 	queue           packetPriorityHeap
-	priorityCounts  [maxSchedulerPriority + 1]uint16
 	trackTypes      map[uint32]struct{}
 	trackData       map[uint32]struct{}
 	trackAck        map[uint32]struct{}
@@ -158,8 +155,10 @@ func (s *Scheduler) Enqueue(target QueueTarget, packet QueuedPacket) bool {
 		order:    s.nextOrder,
 	}
 	s.nextOrder++
+	if owner.queue.Len() == 0 {
+		s.activeOwners.add(owner.streamID)
+	}
 	heap.Push(&owner.queue, item)
-	s.activateOwnerPriority(owner, item.priority)
 	s.totalQueued++
 	if packet.PacketType == Enums.PACKET_PING {
 		s.pingQueued++
@@ -173,15 +172,9 @@ func (s *Scheduler) Dequeue() (DequeueResult, bool) {
 	}
 
 	for attempts := 0; attempts < s.totalQueued+1; attempts++ {
-		priority, ok := s.highestActivePriority()
+		ownerID, ok := s.activeOwners.next()
 		if !ok {
 			return DequeueResult{}, false
-		}
-
-		ownerID, ok := s.rosters[priority].next()
-		if !ok {
-			s.activeMask &^= 1 << uint(priority)
-			continue
 		}
 
 		owner := s.owners[ownerID]
@@ -258,13 +251,6 @@ func (s *Scheduler) ownerFor(target QueueTarget, streamID uint16) *queueOwner {
 	return owner
 }
 
-func (s *Scheduler) highestActivePriority() (int, bool) {
-	if s.activeMask == 0 {
-		return 0, false
-	}
-	return bits.TrailingZeros64(s.activeMask), true
-}
-
 func (s *Scheduler) dequeuePacked(first *queuedItem, firstOwnerID uint16) DequeueResult {
 	blocks := make([]byte, 0, s.maxPackedBlocks*PackedControlBlockSize)
 	blocks = appendPackedControlBlock(blocks, first.packet)
@@ -282,15 +268,15 @@ func (s *Scheduler) dequeuePacked(first *queuedItem, firstOwnerID uint16) Dequeu
 		}
 	}
 
-	ownerCount := s.rosters[priority].Len()
-	currentOwnerID := firstOwnerID
+	ownerIDs := append([]uint16(nil), s.activeOwners.ids...)
+	ownerCount := len(ownerIDs)
+	startIdx := s.activeOwners.cursor
 	for visited := 0; blockCount < s.maxPackedBlocks && visited < ownerCount; visited++ {
-		nextOwnerID, ok := s.rosters[priority].nextAfter(currentOwnerID)
-		if !ok || nextOwnerID == firstOwnerID {
-			break
+		ownerID := ownerIDs[(startIdx+visited)%ownerCount]
+		if ownerID == firstOwnerID {
+			continue
 		}
-		currentOwnerID = nextOwnerID
-		owner := s.owners[nextOwnerID]
+		owner := s.owners[ownerID]
 		for blockCount < s.maxPackedBlocks {
 			next, ok := s.popPackableHead(owner, priority)
 			if !ok {
@@ -337,37 +323,15 @@ func (s *Scheduler) popHead(owner *queueOwner) (*queuedItem, bool) {
 	}
 
 	item := heap.Pop(&owner.queue).(*queuedItem)
-	s.deactivateOwnerPriority(owner, item.priority)
+	if owner.queue.Len() == 0 {
+		s.activeOwners.remove(owner.streamID)
+	}
 	owner.release(item.packet)
 	s.totalQueued--
 	if item.packet.PacketType == Enums.PACKET_PING {
 		s.pingQueued--
 	}
 	return item, true
-}
-
-func (s *Scheduler) activateOwnerPriority(owner *queueOwner, priority int) {
-	if owner == nil {
-		return
-	}
-	if owner.priorityCounts[priority] == 0 {
-		s.rosters[priority].add(owner.streamID)
-		s.activeMask |= 1 << uint(priority)
-	}
-	owner.priorityCounts[priority]++
-}
-
-func (s *Scheduler) deactivateOwnerPriority(owner *queueOwner, priority int) {
-	if owner == nil || owner.priorityCounts[priority] == 0 {
-		return
-	}
-	owner.priorityCounts[priority]--
-	if owner.priorityCounts[priority] == 0 {
-		s.rosters[priority].remove(owner.streamID)
-		if s.rosters[priority].Len() == 0 {
-			s.activeMask &^= 1 << uint(priority)
-		}
-	}
 }
 
 func (s *Scheduler) clearOwner(owner *queueOwner) int {
@@ -390,20 +354,10 @@ func (s *Scheduler) pruneOwner(owner *queueOwner, keep func(QueuedPacket) bool) 
 	if s == nil || owner == nil || owner.queue.Len() == 0 {
 		return 0
 	}
-
-	for priority, count := range owner.priorityCounts {
-		if count == 0 {
-			continue
-		}
-		s.rosters[priority].remove(owner.streamID)
-		if s.rosters[priority].Len() == 0 {
-			s.activeMask &^= 1 << uint(priority)
-		}
-	}
+	s.activeOwners.remove(owner.streamID)
 
 	oldQueue := owner.queue
 	owner.queue = make(packetPriorityHeap, 0, len(oldQueue))
-	owner.priorityCounts = [maxSchedulerPriority + 1]uint16{}
 	owner.resetTracking()
 
 	removed := 0
@@ -421,7 +375,6 @@ func (s *Scheduler) pruneOwner(owner *queueOwner, keep func(QueuedPacket) bool) 
 				continue
 			}
 			heap.Push(&owner.queue, item)
-			s.activateOwnerPriority(owner, item.priority)
 			continue
 		}
 		removed++
@@ -429,6 +382,9 @@ func (s *Scheduler) pruneOwner(owner *queueOwner, keep func(QueuedPacket) bool) 
 		if item.packet.PacketType == Enums.PACKET_PING {
 			s.pingQueued--
 		}
+	}
+	if owner.queue.Len() != 0 {
+		s.activeOwners.add(owner.streamID)
 	}
 	return removed
 }

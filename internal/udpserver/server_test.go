@@ -583,7 +583,7 @@ func TestStreamOutboundStoreSupportsWindowAndOutOfOrderAck(t *testing.T) {
 	}
 }
 
-func TestStreamOutboundStoreResetClearsStreamBacklog(t *testing.T) {
+func TestStreamOutboundStoreResetPreservesRoundRobinFairness(t *testing.T) {
 	store := newStreamOutboundStore(4, 256)
 	now := time.Now()
 
@@ -611,12 +611,12 @@ func TestStreamOutboundStoreResetClearsStreamBacklog(t *testing.T) {
 	})
 
 	next, ok := store.Next(9, now)
-	if !ok || next.PacketType != Enums.PACKET_STREAM_RST || next.StreamID != 33 {
-		t.Fatalf("expected reset to preempt same-stream backlog, got ok=%v packet=%+v", ok, next)
+	if !ok || next.StreamID != 44 || next.PacketType != Enums.PACKET_STREAM_DATA {
+		t.Fatalf("expected the next owner turn to stay fair, got ok=%v packet=%+v", ok, next)
 	}
 	after, ok := store.Next(9, now)
-	if !ok || after.StreamID != 44 || after.PacketType != Enums.PACKET_STREAM_DATA {
-		t.Fatalf("expected unrelated stream packet to remain queued, got ok=%v packet=%+v", ok, after)
+	if !ok || after.PacketType != Enums.PACKET_STREAM_RST || after.StreamID != 33 {
+		t.Fatalf("expected reset to remain queued for the following turn, got ok=%v packet=%+v", ok, after)
 	}
 }
 
@@ -730,13 +730,13 @@ func TestStreamOutboundStorePrioritizesControlOverQueuedData(t *testing.T) {
 	if !store.Enqueue(6, arq.QueueTargetStream, VpnProto.Packet{PacketType: Enums.PACKET_STREAM_DATA, StreamID: 10, SequenceNum: 1}) {
 		t.Fatal("expected data enqueue to succeed")
 	}
-	if !store.Enqueue(6, arq.QueueTargetStream, VpnProto.Packet{PacketType: Enums.PACKET_STREAM_FIN, StreamID: 11, SequenceNum: 2}) {
+	if !store.Enqueue(6, arq.QueueTargetStream, VpnProto.Packet{PacketType: Enums.PACKET_STREAM_FIN, StreamID: 10, SequenceNum: 2}) {
 		t.Fatal("expected fin enqueue to succeed")
 	}
 
 	first, ok := store.Next(6, now)
-	if !ok || first.PacketType != Enums.PACKET_STREAM_FIN {
-		t.Fatalf("expected FIN to win priority dequeue, ok=%v packet=%+v", ok, first)
+	if !ok || first.PacketType != Enums.PACKET_STREAM_FIN || first.StreamID != 10 {
+		t.Fatalf("expected FIN to win inside the same owner queue, ok=%v packet=%+v", ok, first)
 	}
 }
 

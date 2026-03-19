@@ -83,6 +83,49 @@ func TestSchedulerPreservesRoundRobinForSamePriority(t *testing.T) {
 	}
 }
 
+func TestSchedulerRoundRobinBeatsCrossOwnerPriorityStarvation(t *testing.T) {
+	scheduler := NewScheduler(1)
+	if !scheduler.Enqueue(QueueTargetMain, QueuedPacket{
+		PacketType:  Enums.PACKET_STREAM_FIN_ACK,
+		StreamID:    0,
+		SequenceNum: 1,
+		Priority:    9,
+	}) {
+		t.Fatal("expected main owner enqueue to succeed")
+	}
+	if !scheduler.Enqueue(QueueTargetMain, QueuedPacket{
+		PacketType:  Enums.PACKET_STREAM_RST_ACK,
+		StreamID:    0,
+		SequenceNum: 2,
+		Priority:    9,
+	}) {
+		t.Fatal("expected second main owner enqueue to succeed")
+	}
+	if !scheduler.Enqueue(QueueTargetStream, QueuedPacket{
+		PacketType:  Enums.PACKET_STREAM_DATA,
+		StreamID:    7,
+		SequenceNum: 1,
+		Priority:    20,
+	}) {
+		t.Fatal("expected stream owner enqueue to succeed")
+	}
+
+	first, ok := scheduler.Dequeue()
+	if !ok || first.Packet.StreamID != 0 || first.Packet.PacketType != Enums.PACKET_STREAM_FIN_ACK {
+		t.Fatalf("expected main owner first packet, got=%+v ok=%v", first.Packet, ok)
+	}
+
+	second, ok := scheduler.Dequeue()
+	if !ok || second.Packet.StreamID != 7 || second.Packet.PacketType != Enums.PACKET_STREAM_DATA {
+		t.Fatalf("expected stream owner to get next turn despite lower priority, got=%+v ok=%v", second.Packet, ok)
+	}
+
+	third, ok := scheduler.Dequeue()
+	if !ok || third.Packet.StreamID != 0 || third.Packet.PacketType != Enums.PACKET_STREAM_RST_ACK {
+		t.Fatalf("expected main owner remaining packet last, got=%+v ok=%v", third.Packet, ok)
+	}
+}
+
 func TestSchedulerPacksSamePriorityControlBlocksAcrossStreams(t *testing.T) {
 	scheduler := NewScheduler(4)
 	packets := []QueuedPacket{
@@ -113,13 +156,13 @@ func TestSchedulerPacksSamePriorityControlBlocksAcrossStreams(t *testing.T) {
 	}
 
 	next, ok := scheduler.Dequeue()
-	if !ok || next.Packet.PacketType != Enums.PACKET_SOCKS5_CONNECT_FAIL {
-		t.Fatalf("expected remaining same-stream control packet, got=%+v ok=%v", next.Packet, ok)
+	if !ok || next.Packet.PacketType != Enums.PACKET_STREAM_DATA || next.Packet.StreamID != 3 {
+		t.Fatalf("expected round-robin to move to the next owner after packed dequeue, got=%+v ok=%v", next.Packet, ok)
 	}
 
 	last, ok := scheduler.Dequeue()
-	if !ok || last.Packet.PacketType != Enums.PACKET_STREAM_DATA {
-		t.Fatalf("expected remaining data packet, got=%+v ok=%v", next.Packet, ok)
+	if !ok || last.Packet.PacketType != Enums.PACKET_SOCKS5_CONNECT_FAIL || last.Packet.StreamID != 2 {
+		t.Fatalf("expected remaining owner-local control packet last, got=%+v ok=%v", last.Packet, ok)
 	}
 }
 
@@ -174,15 +217,31 @@ func TestSchedulerHandleStreamResetKeepsOnlyResetControlsInMain(t *testing.T) {
 	}
 
 	first, ok := scheduler.Dequeue()
-	if !ok || first.Packet.PacketType != Enums.PACKET_PACKED_CONTROL_BLOCKS {
-		t.Fatalf("expected reset controls to remain as packed block, got=%+v ok=%v", first.Packet, ok)
-	}
-	if first.PackedBlocks != 2 {
-		t.Fatalf("expected packed reset block count=2, got=%d", first.PackedBlocks)
+	if !ok {
+		t.Fatal("expected first packet after stream reset")
 	}
 	second, ok := scheduler.Dequeue()
-	if !ok || second.Packet.StreamID != 9 || second.Packet.PacketType != Enums.PACKET_STREAM_DATA {
-		t.Fatalf("expected unrelated stream data to remain queued, got=%+v ok=%v", second.Packet, ok)
+	if !ok {
+		t.Fatal("expected second packet after stream reset")
+	}
+
+	packedSeen := false
+	dataSeen := false
+	for _, result := range []DequeueResult{first, second} {
+		switch {
+		case result.Packet.PacketType == Enums.PACKET_PACKED_CONTROL_BLOCKS:
+			if result.PackedBlocks != 2 {
+				t.Fatalf("expected packed reset block count=2, got=%d", result.PackedBlocks)
+			}
+			packedSeen = true
+		case result.Packet.PacketType == Enums.PACKET_STREAM_DATA && result.Packet.StreamID == 9:
+			dataSeen = true
+		default:
+			t.Fatalf("unexpected packet after stream reset: %+v", result.Packet)
+		}
+	}
+	if !packedSeen || !dataSeen {
+		t.Fatalf("expected both packed reset controls and unrelated stream data, packed=%v data=%v", packedSeen, dataSeen)
 	}
 }
 
