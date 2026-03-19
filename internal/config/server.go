@@ -38,6 +38,7 @@ type ServerConfig struct {
 	MaxPacketsPerBatch                int      `toml:"MAX_PACKETS_PER_BATCH"`
 	DNSUpstreamServers                []string `toml:"DNS_UPSTREAM_SERVERS"`
 	DNSUpstreamTimeoutSecs            float64  `toml:"DNS_UPSTREAM_TIMEOUT"`
+	SOCKSConnectTimeoutSecs           float64  `toml:"SOCKS_CONNECT_TIMEOUT"`
 	DNSFragmentAssemblyTimeoutSecs    float64  `toml:"DNS_FRAGMENT_ASSEMBLY_TIMEOUT"`
 	DNSCacheMaxRecords                int      `toml:"DNS_CACHE_MAX_RECORDS"`
 	DNSCacheTTLSeconds                float64  `toml:"DNS_CACHE_TTL_SECONDS"`
@@ -72,6 +73,7 @@ func defaultServerConfig() ServerConfig {
 		MaxPacketsPerBatch:                20,
 		DNSUpstreamServers:                []string{"1.1.1.1:53"},
 		DNSUpstreamTimeoutSecs:            4.0,
+		SOCKSConnectTimeoutSecs:           8.0,
 		DNSFragmentAssemblyTimeoutSecs:    16.0,
 		DNSCacheMaxRecords:                2000,
 		DNSCacheTTLSeconds:                3600.0,
@@ -158,6 +160,9 @@ func LoadServerConfig(filename string) (ServerConfig, error) {
 	if cfg.DNSUpstreamTimeoutSecs <= 0 {
 		cfg.DNSUpstreamTimeoutSecs = 4.0
 	}
+	if cfg.SOCKSConnectTimeoutSecs <= 0 {
+		cfg.SOCKSConnectTimeoutSecs = 8.0
+	}
 	if cfg.DNSFragmentAssemblyTimeoutSecs <= 0 {
 		cfg.DNSFragmentAssemblyTimeoutSecs = max(10.0, cfg.DNSUpstreamTimeoutSecs*4.0)
 	}
@@ -215,6 +220,10 @@ func (c ServerConfig) ClosedSessionRetention() time.Duration {
 
 func (c ServerConfig) DNSUpstreamTimeout() time.Duration {
 	return time.Duration(c.DNSUpstreamTimeoutSecs * float64(time.Second))
+}
+
+func (c ServerConfig) SOCKSConnectTimeout() time.Duration {
+	return time.Duration(c.SOCKSConnectTimeoutSecs * float64(time.Second))
 }
 
 func (c ServerConfig) DNSFragmentAssemblyTimeout() time.Duration {

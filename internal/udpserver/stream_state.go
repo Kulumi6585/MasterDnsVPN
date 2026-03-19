@@ -8,6 +8,7 @@
 package udpserver
 
 import (
+	"net"
 	"sync"
 	"time"
 
@@ -20,6 +21,8 @@ type streamStateRecord struct {
 	State          uint8
 	TargetHost     string
 	TargetPort     uint16
+	UpstreamConn   net.Conn
+	Connected      bool
 	CreatedAt      time.Time
 	LastActivityAt time.Time
 	LastSequence   uint16
@@ -79,6 +82,27 @@ func (s *streamStateStore) BindTarget(sessionID uint8, streamID uint16, host str
 	return cloneStreamStateRecord(record), true
 }
 
+func (s *streamStateStore) AttachUpstream(sessionID uint8, streamID uint16, host string, port uint16, conn net.Conn, now time.Time) (*streamStateRecord, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	record := s.lookupLocked(sessionID, streamID)
+	if record == nil {
+		safeCloseConn(conn)
+		return nil, false
+	}
+	if record.UpstreamConn != nil && record.UpstreamConn != conn {
+		safeCloseConn(conn)
+		return nil, false
+	}
+	record.TargetHost = host
+	record.TargetPort = port
+	record.UpstreamConn = conn
+	record.Connected = conn != nil
+	record.LastActivityAt = now
+	return cloneStreamStateRecord(record), true
+}
+
 func (s *streamStateStore) Touch(sessionID uint8, streamID uint16, sequenceNum uint16, now time.Time) (*streamStateRecord, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -123,6 +147,9 @@ func (s *streamStateStore) MarkReset(sessionID uint8, streamID uint16, sequenceN
 	if record == nil {
 		return false
 	}
+	safeCloseConn(record.UpstreamConn)
+	record.UpstreamConn = nil
+	record.Connected = false
 	record.LastActivityAt = now
 	record.LastSequence = sequenceNum
 	record.State = Enums.STREAM_STATE_RESET
@@ -146,8 +173,14 @@ func (s *streamStateStore) Lookup(sessionID uint8, streamID uint16) (*streamStat
 
 func (s *streamStateStore) RemoveSession(sessionID uint8) {
 	s.mu.Lock()
+	streams := s.sessions[sessionID]
 	delete(s.sessions, sessionID)
 	s.mu.Unlock()
+	for _, record := range streams {
+		if record != nil {
+			safeCloseConn(record.UpstreamConn)
+		}
+	}
 }
 
 func (s *streamStateStore) lookupLocked(sessionID uint8, streamID uint16) *streamStateRecord {
@@ -164,4 +197,11 @@ func cloneStreamStateRecord(record *streamStateRecord) *streamStateRecord {
 	}
 	cloned := *record
 	return &cloned
+}
+
+func safeCloseConn(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	_ = conn.Close()
 }

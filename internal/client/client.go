@@ -43,6 +43,7 @@ type Client struct {
 	downloadCompression uint8
 	enqueueSeq          uint64
 	mainSequence        uint16
+	lastStreamID        uint16
 	syncedUploadMTU     int
 	syncedDownloadMTU   int
 	syncedUploadChars   int
@@ -164,6 +165,7 @@ func (c *Client) MaxPackedBlocks() int {
 func (c *Client) ResetRuntimeState(resetSessionCookie bool) {
 	c.enqueueSeq = 0
 	c.mainSequence = 0
+	c.lastStreamID = 0
 	c.sessionReady = false
 	c.sessionID = 0
 	if resetSessionCookie {

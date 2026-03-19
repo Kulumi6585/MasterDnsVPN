@@ -860,6 +860,117 @@ func TestStream0RuntimeRetriesDNSQueryAfterTransientFailure(t *testing.T) {
 	}
 }
 
+func TestOpenSOCKS5StreamCompletesHandshake(t *testing.T) {
+	codec, err := security.NewCodec(0, "")
+	if err != nil {
+		t.Fatalf("NewCodec returned error: %v", err)
+	}
+
+	c := New(config.ClientConfig{
+		LocalDNSPendingTimeoutSec: 1,
+	}, nil, codec)
+	c.connections = []Connection{{
+		Domain:        "v.example.com",
+		Resolver:      "127.0.0.1",
+		ResolverPort:  5353,
+		ResolverLabel: "127.0.0.1:5353",
+		Key:           "127.0.0.1|5353|v.example.com",
+		IsValid:       true,
+	}}
+	c.connectionsByKey = map[string]int{c.connections[0].Key: 0}
+	c.rebuildBalancer()
+	c.sessionID = 7
+	c.sessionCookie = 9
+	c.sessionReady = true
+	c.responseMode = mtuProbeRawResponse
+
+	c.exchangeQueryFn = func(conn Connection, packet []byte, timeout time.Duration) ([]byte, error) {
+		queryPacket, err := DnsParser.ParsePacketLite(packet)
+		if err != nil || !queryPacket.HasQuestion {
+			t.Fatalf("unexpected tunnel query: err=%v", err)
+		}
+		vpnPacket, err := VpnProto.ParseFromLabels(extractTestTunnelLabels(queryPacket.FirstQuestion.Name, "v.example.com"), c.codec)
+		if err != nil {
+			t.Fatalf("ParseFromLabels returned error: %v", err)
+		}
+		responseType := uint8(Enums.PACKET_SOCKS5_SYN_ACK)
+		if vpnPacket.PacketType == Enums.PACKET_STREAM_SYN {
+			responseType = uint8(Enums.PACKET_STREAM_SYN_ACK)
+		}
+		return DnsParser.BuildVPNResponsePacket(packet, queryPacket.FirstQuestion.Name, VpnProto.Packet{
+			SessionID:      c.sessionID,
+			SessionCookie:  c.sessionCookie,
+			PacketType:     responseType,
+			StreamID:       vpnPacket.StreamID,
+			SequenceNum:    vpnPacket.SequenceNum,
+			FragmentID:     0,
+			TotalFragments: 1,
+		}, false)
+	}
+
+	streamID, err := c.OpenSOCKS5Stream([]byte{0x03, 0x0B, 'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm', 0x01, 0xBB}, time.Second)
+	if err != nil {
+		t.Fatalf("OpenSOCKS5Stream returned error: %v", err)
+	}
+	if streamID == 0 {
+		t.Fatal("expected non-zero stream id")
+	}
+}
+
+func TestOpenSOCKS5StreamReturnsServerError(t *testing.T) {
+	codec, err := security.NewCodec(0, "")
+	if err != nil {
+		t.Fatalf("NewCodec returned error: %v", err)
+	}
+
+	c := New(config.ClientConfig{
+		LocalDNSPendingTimeoutSec: 1,
+	}, nil, codec)
+	c.connections = []Connection{{
+		Domain:        "v.example.com",
+		Resolver:      "127.0.0.1",
+		ResolverPort:  5353,
+		ResolverLabel: "127.0.0.1:5353",
+		Key:           "127.0.0.1|5353|v.example.com",
+		IsValid:       true,
+	}}
+	c.connectionsByKey = map[string]int{c.connections[0].Key: 0}
+	c.rebuildBalancer()
+	c.sessionID = 7
+	c.sessionCookie = 9
+	c.sessionReady = true
+	c.responseMode = mtuProbeRawResponse
+
+	c.exchangeQueryFn = func(conn Connection, packet []byte, timeout time.Duration) ([]byte, error) {
+		queryPacket, err := DnsParser.ParsePacketLite(packet)
+		if err != nil || !queryPacket.HasQuestion {
+			t.Fatalf("unexpected tunnel query: err=%v", err)
+		}
+		vpnPacket, err := VpnProto.ParseFromLabels(extractTestTunnelLabels(queryPacket.FirstQuestion.Name, "v.example.com"), c.codec)
+		if err != nil {
+			t.Fatalf("ParseFromLabels returned error: %v", err)
+		}
+		responseType := uint8(Enums.PACKET_SOCKS5_CONNECTION_REFUSED)
+		if vpnPacket.PacketType == Enums.PACKET_STREAM_SYN {
+			responseType = uint8(Enums.PACKET_STREAM_SYN_ACK)
+		}
+		return DnsParser.BuildVPNResponsePacket(packet, queryPacket.FirstQuestion.Name, VpnProto.Packet{
+			SessionID:      c.sessionID,
+			SessionCookie:  c.sessionCookie,
+			PacketType:     responseType,
+			StreamID:       vpnPacket.StreamID,
+			SequenceNum:    vpnPacket.SequenceNum,
+			FragmentID:     0,
+			TotalFragments: 1,
+		}, false)
+	}
+
+	_, err = c.OpenSOCKS5Stream([]byte{0x01, 127, 0, 0, 1, 0x01, 0xBB}, time.Second)
+	if err == nil {
+		t.Fatal("expected handshake error")
+	}
+}
+
 func TestDispatchDNSQueryFailsWithoutValidConnections(t *testing.T) {
 	codec, err := security.NewCodec(0, "")
 	if err != nil {

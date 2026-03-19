@@ -13,6 +13,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -51,6 +53,7 @@ type Server struct {
 	dnsFragmentMu           sync.Mutex
 	dnsFragments            map[dnsFragmentKey]*dnsFragmentEntry
 	resolveDNSQueryFn       func([]byte) ([]byte, error)
+	dialStreamUpstreamFn    func(string, string, time.Duration) (net.Conn, error)
 	uploadCompressionMask   uint8
 	downloadCompressionMask uint8
 	packetPool              sync.Pool
@@ -78,9 +81,12 @@ func New(cfg config.ServerConfig, log *logger.Logger, codec *security.Codec) *Se
 			time.Duration(cfg.DNSCacheTTLSeconds*float64(time.Second)),
 			cfg.DNSFragmentAssemblyTimeout(),
 		),
-		dnsResolveInflight:      newDNSResolveInflightManager(cfg.DNSFragmentAssemblyTimeout()),
-		dnsUpstreamServers:      append([]string(nil), cfg.DNSUpstreamServers...),
-		dnsFragments:            make(map[dnsFragmentKey]*dnsFragmentEntry, 32),
+		dnsResolveInflight: newDNSResolveInflightManager(cfg.DNSFragmentAssemblyTimeout()),
+		dnsUpstreamServers: append([]string(nil), cfg.DNSUpstreamServers...),
+		dnsFragments:       make(map[dnsFragmentKey]*dnsFragmentEntry, 32),
+		dialStreamUpstreamFn: func(network string, address string, timeout time.Duration) (net.Conn, error) {
+			return net.DialTimeout(network, address, timeout)
+		},
 		uploadCompressionMask:   buildCompressionMask(cfg.SupportedUploadCompressionTypes),
 		downloadCompressionMask: buildCompressionMask(cfg.SupportedDownloadCompressionTypes),
 		packetPool: sync.Pool{
@@ -718,10 +724,55 @@ func (s *Server) handleSOCKS5SynRequest(questionPacket []byte, decision domainma
 		})
 	}
 
-	record, ok := s.streams.BindTarget(vpnPacket.SessionID, vpnPacket.StreamID, target.Host, target.Port, time.Now())
-	if !ok || record == nil {
+	existingRecord, ok := s.streams.Lookup(vpnPacket.SessionID, vpnPacket.StreamID)
+	if !ok || existingRecord == nil {
 		return s.buildSessionVPNResponse(questionPacket, decision.RequestName, sessionRecord, VpnProto.Packet{
 			PacketType:  Enums.PACKET_SOCKS5_CONNECT_FAIL,
+			StreamID:    vpnPacket.StreamID,
+			SequenceNum: vpnPacket.SequenceNum,
+		})
+	}
+	if existingRecord.Connected && existingRecord.TargetHost == target.Host && existingRecord.TargetPort == target.Port {
+		return s.buildSessionVPNResponse(questionPacket, decision.RequestName, sessionRecord, VpnProto.Packet{
+			PacketType:  Enums.PACKET_SOCKS5_SYN_ACK,
+			StreamID:    vpnPacket.StreamID,
+			SequenceNum: vpnPacket.SequenceNum,
+		})
+	}
+	if existingRecord.Connected && (existingRecord.TargetHost != target.Host || existingRecord.TargetPort != target.Port) {
+		return s.buildSessionVPNResponse(questionPacket, decision.RequestName, sessionRecord, VpnProto.Packet{
+			PacketType:  Enums.PACKET_SOCKS5_CONNECT_FAIL,
+			StreamID:    vpnPacket.StreamID,
+			SequenceNum: vpnPacket.SequenceNum,
+		})
+	}
+
+	upstreamConn, err := s.dialSOCKSStreamTarget(target.Host, target.Port)
+	if err != nil {
+		packetType := s.mapSOCKSConnectError(err)
+		if s.log != nil {
+			s.log.Debugf(
+				"🧦 <yellow>SOCKS5 Upstream Connect Failed</yellow> <magenta>|</magenta> <blue>Session</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Stream</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Target</blue>: <cyan>%s:%d</cyan> <magenta>|</magenta> <blue>Packet</blue>: <yellow>%s</yellow> <magenta>|</magenta> <cyan>%v</cyan>",
+				vpnPacket.SessionID,
+				vpnPacket.StreamID,
+				target.Host,
+				target.Port,
+				Enums.PacketTypeName(packetType),
+				err,
+			)
+		}
+		return s.buildSessionVPNResponse(questionPacket, decision.RequestName, sessionRecord, VpnProto.Packet{
+			PacketType:  packetType,
+			StreamID:    vpnPacket.StreamID,
+			SequenceNum: vpnPacket.SequenceNum,
+		})
+	}
+
+	record, ok := s.streams.AttachUpstream(vpnPacket.SessionID, vpnPacket.StreamID, target.Host, target.Port, upstreamConn, time.Now())
+	if !ok || record == nil {
+		safeCloseConn(upstreamConn)
+		return s.buildSessionVPNResponse(questionPacket, decision.RequestName, sessionRecord, VpnProto.Packet{
+			PacketType:  Enums.PACKET_SOCKS5_UPSTREAM_UNAVAILABLE,
 			StreamID:    vpnPacket.StreamID,
 			SequenceNum: vpnPacket.SequenceNum,
 		})
@@ -742,6 +793,54 @@ func (s *Server) handleSOCKS5SynRequest(questionPacket []byte, decision domainma
 		StreamID:    vpnPacket.StreamID,
 		SequenceNum: vpnPacket.SequenceNum,
 	})
+}
+
+func (s *Server) dialSOCKSStreamTarget(host string, port uint16) (net.Conn, error) {
+	dialFn := s.dialStreamUpstreamFn
+	if dialFn == nil {
+		dialFn = func(network string, address string, timeout time.Duration) (net.Conn, error) {
+			return net.DialTimeout(network, address, timeout)
+		}
+	}
+	return dialFn("tcp", net.JoinHostPort(host, strconv.Itoa(int(port))), s.cfg.SOCKSConnectTimeout())
+}
+
+func (s *Server) mapSOCKSConnectError(err error) uint8 {
+	if err == nil {
+		return Enums.PACKET_SOCKS5_CONNECT_FAIL
+	}
+
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return Enums.PACKET_SOCKS5_HOST_UNREACHABLE
+	}
+
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Timeout() {
+		return Enums.PACKET_SOCKS5_TTL_EXPIRED
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return Enums.PACKET_SOCKS5_TTL_EXPIRED
+	}
+
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "connection refused"):
+		return Enums.PACKET_SOCKS5_CONNECTION_REFUSED
+	case strings.Contains(message, "network is unreachable"):
+		return Enums.PACKET_SOCKS5_NETWORK_UNREACHABLE
+	case strings.Contains(message, "no route to host"),
+		strings.Contains(message, "host is unreachable"),
+		strings.Contains(message, "no such host"):
+		return Enums.PACKET_SOCKS5_HOST_UNREACHABLE
+	case strings.Contains(message, "i/o timeout"),
+		strings.Contains(message, "timed out"):
+		return Enums.PACKET_SOCKS5_TTL_EXPIRED
+	default:
+		return Enums.PACKET_SOCKS5_UPSTREAM_UNAVAILABLE
+	}
 }
 
 func (s *Server) handleStreamDataRequest(questionPacket []byte, decision domainmatcher.Decision, vpnPacket VpnProto.Packet) []byte {
