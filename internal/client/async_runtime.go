@@ -15,7 +15,9 @@ import (
 	"net"
 	"time"
 
+	"masterdnsvpn-go/internal/client/handlers"
 	DnsParser "masterdnsvpn-go/internal/dnsparser"
+	"masterdnsvpn-go/internal/logger"
 )
 
 type asyncPacket struct {
@@ -264,12 +266,14 @@ func (c *Client) handleInboundPacket(data []byte, addr *net.UDPAddr) {
 		return
 	}
 
-	c.pingManager.NotifyPacket(vpnPacket.PacketType, true)
-	c.log.Infof("\U0001F4E5 <cyan>Received Validated VPN Packet (Type: %d)</cyan>", vpnPacket.PacketType)
+	// 3. Dispatch to Packet Handlers via Registry
+	if err := handlers.Dispatch(c, vpnPacket, addr); err != nil {
+		c.log.Warnf("\U0001F6A8 <red>Handler execution failed: %v</red>", err)
+	}
 
-	// // 4. Dispatch to Session/Stream handler
-	// dispatch, err := c.dispatchServerPacket(vpnPacket, time.Second, nil)
-	// ... (logic deferred)
+	if c.log.Enabled(logger.LevelDebug) {
+		c.log.Debugf("\U0001F4E5 <cyan>Received Validated VPN Packet (Type: %d)</cyan>", vpnPacket.PacketType)
+	}
 }
 
 // SendBurstPacket adds a packet to the transmission queue.

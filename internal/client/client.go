@@ -114,6 +114,26 @@ func (c *Client) SessionReady() bool {
 	return c.sessionReady
 }
 
+func (c *Client) SessionID() uint8 {
+	return c.sessionID
+}
+
+func (c *Client) IsSessionReady() bool {
+	return c.SessionReady()
+}
+
+func (c *Client) ResponseMode() uint8 {
+	return c.responseMode
+}
+
+func (c *Client) Log() *logger.Logger {
+	return c.log
+}
+
+func (c *Client) NotifyPacket(packetType uint8, isInbound bool) {
+	c.pingManager.NotifyPacket(packetType, isInbound)
+}
+
 // clientStreamTXPacket represents a queued packet pending transmission or retransmission.
 type clientStreamTXPacket struct {
 	PacketType  uint8
@@ -560,4 +580,34 @@ func (c *Client) SetConnectionValidity(key string, isValid bool) bool {
 	}
 	conn.IsValid = isValid
 	return true
+}
+
+func (c *Client) HandleStreamPacket(packet VpnProto.Packet) error {
+	// TODO: Move implementation here
+	return nil
+}
+
+func (c *Client) HandlePackedControlBlocks(payload []byte) error {
+	// TODO: Move implementation here
+	return nil
+}
+
+func (c *Client) HandleSessionReject(packet VpnProto.Packet) error {
+	// TODO: Move implementation here
+	return nil
+}
+
+func (c *Client) HandleSessionBusy() error {
+	// TODO: Move implementation here
+	return nil
+}
+
+func (c *Client) HandleMTUResponse(packet VpnProto.Packet) error {
+	// TODO: Move implementation here
+	return nil
+}
+
+func (c *Client) HandleServerDrop(packet VpnProto.Packet) error {
+	// TODO: Move implementation here
+	return nil
 }
