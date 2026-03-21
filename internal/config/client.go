@@ -83,6 +83,11 @@ type ClientConfig struct {
 	LogLevel                              string            `toml:"LOG_LEVEL"`
 	ARQWindowSize                         int               `toml:"ARQ_WINDOW_SIZE"`
 	MaxInflightPackets                    int               `toml:"MAX_INFLIGHT_PACKETS"`
+	TunnelWriterWorkers                   int               `toml:"TUNNEL_WRITER_WORKERS"`
+	TunnelReaderWorkers                   int               `toml:"TUNNEL_READER_WORKERS"`
+	TunnelProcessWorkers                  int               `toml:"TUNNEL_PROCESS_WORKERS"`
+	TunnelPacketQueueSize                 int               `toml:"TUNNEL_PACKET_QUEUE_SIZE"`
+	TunnelPacketTimeout                   float64           `toml:"TUNNEL_PACKET_TIMEOUT"`
 	Resolvers                             []ResolverAddress `toml:"-"`
 	ResolverMap                           map[string]int    `toml:"-"`
 }
@@ -150,6 +155,11 @@ func defaultClientConfig() ClientConfig {
 		LogLevel:                              "INFO",
 		ARQWindowSize:                         600,
 		MaxInflightPackets:                    128,
+		TunnelWriterWorkers:                   4,
+		TunnelReaderWorkers:                   2,
+		TunnelProcessWorkers:                  8,
+		TunnelPacketQueueSize:                 2048,
+		TunnelPacketTimeout:                   15.0,
 	}
 }
 
@@ -253,6 +263,11 @@ func LoadClientConfig(filename string) (ClientConfig, error) {
 	cfg.StreamResolverFailoverCooldownSec = defaultFloatBelow(cfg.StreamResolverFailoverCooldownSec, 0.1, 1.0)
 	cfg.ARQWindowSize = clampInt(defaultIntBelow(cfg.ARQWindowSize, 1, 600), 1, 4096)
 	cfg.MaxInflightPackets = clampInt(defaultIntBelow(cfg.MaxInflightPackets, 1, 128), 1, 2048)
+	cfg.TunnelWriterWorkers = clampInt(defaultIntBelow(cfg.TunnelWriterWorkers, 1, 4), 1, 64)
+	cfg.TunnelReaderWorkers = clampInt(defaultIntBelow(cfg.TunnelReaderWorkers, 1, 2), 1, 64)
+	cfg.TunnelProcessWorkers = clampInt(defaultIntBelow(cfg.TunnelProcessWorkers, 1, 8), 1, 128)
+	cfg.TunnelPacketQueueSize = clampInt(defaultIntBelow(cfg.TunnelPacketQueueSize, 128, 2048), 128, 65535)
+	cfg.TunnelPacketTimeout = defaultFloatBelow(cfg.TunnelPacketTimeout, 0.1, 15.0)
 
 	if cfg.MinUploadMTU < 0 || cfg.MinDownloadMTU < 0 || cfg.MaxUploadMTU < 0 || cfg.MaxDownloadMTU < 0 {
 		return cfg, fmt.Errorf("mtu values cannot be negative")

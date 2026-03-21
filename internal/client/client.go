@@ -118,6 +118,22 @@ type Client struct {
 
 	udpBufferPool   sync.Pool
 	mtuProbeCounter atomic.Uint64
+
+	tunnelWriterWorkers   int
+	tunnelReaderWorkers   int
+	tunnelProcessWorkers  int
+	tunnelPacketQueueSize int
+	tunnelPacketTimeout   time.Duration
+	txChannel             chan asyncPacket
+	rxChannel             chan []byte
+
+	asyncCancel context.CancelFunc
+	asyncWG     sync.WaitGroup
+}
+
+type asyncPacket struct {
+	conn    Connection
+	payload []byte
 }
 
 const (
@@ -306,6 +322,13 @@ func New(cfg config.ClientConfig, log *logger.Logger, codec *security.Codec) *Cl
 				return make([]byte, runtimeUDPReadBufferSize())
 			},
 		},
+		tunnelWriterWorkers:   cfg.TunnelWriterWorkers,
+		tunnelReaderWorkers:   cfg.TunnelReaderWorkers,
+		tunnelProcessWorkers:  cfg.TunnelProcessWorkers,
+		tunnelPacketQueueSize: cfg.TunnelPacketQueueSize,
+		tunnelPacketTimeout:   time.Duration(cfg.TunnelPacketTimeout * float64(time.Second)),
+		txChannel:             make(chan asyncPacket, cfg.TunnelPacketQueueSize),
+		rxChannel:             make(chan []byte, cfg.TunnelPacketQueueSize),
 	}
 
 	if c.localDNSCacheFlushTick <= 0 {
