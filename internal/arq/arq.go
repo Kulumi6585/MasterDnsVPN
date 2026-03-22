@@ -142,6 +142,7 @@ type ARQ struct {
 
 	// SOCKS pre-connection payload handling
 	isSocks           bool
+	isClient          bool
 	isVirtual         bool
 	initialData       []byte
 	socksHandshake    chan struct{}
@@ -159,6 +160,7 @@ type Config struct {
 	RTO                      float64
 	MaxRTO                   float64
 	IsSocks                  bool
+	IsClient                 bool
 	IsVirtual                bool
 	InitialData              []byte
 	EnableControlReliability bool
@@ -186,10 +188,7 @@ func NewARQ(streamID uint16, sessionID uint8, enqueuer PacketEnqueuer, localConn
 		logger = &dummyLogger{}
 	}
 
-	windowSize := cfg.WindowSize
-	if windowSize < 1 {
-		windowSize = 1
-	}
+	windowSize := max(cfg.WindowSize, 300)
 
 	limit := max(int(float64(windowSize)*0.8), 50)
 
@@ -224,6 +223,7 @@ func NewARQ(streamID uint16, sessionID uint8, enqueuer PacketEnqueuer, localConn
 		controlPacketTTL:         time.Duration(maxF(120.0, cfg.ControlPacketTTL) * float64(time.Second)),
 
 		isSocks:         cfg.IsSocks,
+		isClient:        cfg.IsClient,
 		isVirtual:       cfg.IsVirtual,
 		initialData:     cfg.InitialData,
 		socksHandshake:  make(chan struct{}),
@@ -622,7 +622,11 @@ func (a *ARQ) ioLoop() {
 		if err != nil {
 			if err == io.EOF {
 				errorReason = "Local App Closed Connection (EOF)"
-				gracefulEOF = true
+				if a.shouldAbortOnLocalEOF() {
+					resetRequired = true
+				} else {
+					gracefulEOF = true
+				}
 			} else {
 				errorReason = "Read Error: " + err.Error()
 				resetRequired = true
@@ -632,7 +636,11 @@ func (a *ARQ) ioLoop() {
 
 		if n == 0 {
 			errorReason = "Local App Closed Connection (EOF)"
-			gracefulEOF = true
+			if a.shouldAbortOnLocalEOF() {
+				resetRequired = true
+			} else {
+				gracefulEOF = true
+			}
 			break
 		}
 
@@ -690,6 +698,17 @@ func (a *ARQ) ioLoop() {
 	} else if gracefulEOF {
 		a.initiateGracefulClose(errorReason)
 	}
+}
+
+func (a *ARQ) shouldAbortOnLocalEOF() bool {
+	if !a.isClient {
+		return false
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	return len(a.sndBuf) > 0
 }
 
 func (a *ARQ) finReceivedLocked() bool {

@@ -147,6 +147,7 @@ func (c *Client) new_stream(streamID uint16, conn net.Conn, targetPayload []byte
 		RTO:                      0.2, // Fast retry out of the gate
 		MaxRTO:                   1.5,
 		IsSocks:                  c.cfg.ProtocolType == "SOCKS5",
+		IsClient:                 true,
 		InitialData:              targetPayload,
 		EnableControlReliability: true,
 		ControlRTO:               0.8,
@@ -436,6 +437,7 @@ func (c *Client) InitVirtualStream0() {
 		RTO:                      0.2, // Fast retry out of the gate
 		MaxRTO:                   1.5,
 		IsSocks:                  false,
+		IsClient:                 true,
 		IsVirtual:                true, // Bypasses internal timeout closures
 		EnableControlReliability: true,
 		ControlRTO:               0.8,
