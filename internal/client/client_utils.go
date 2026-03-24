@@ -238,7 +238,7 @@ func (c *Client) handleMissingStreamPacket(packet VpnProto.Packet) bool {
 
 	// GetPacketCloseStream
 	ack_answer, ok := Enums.GetPacketCloseStream(packet.PacketType)
-	if ok {
+	if ok && packet.PacketType != Enums.PACKET_STREAM_FIN {
 		c.enqueueOrphanReset(ack_answer, packet.StreamID, 0)
 	} else {
 		c.enqueueOrphanReset(Enums.PACKET_STREAM_RST, packet.StreamID, 0)
