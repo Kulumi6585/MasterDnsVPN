@@ -129,15 +129,16 @@ type ARQ struct {
 	rstAcked    bool
 	rstSeqSent  *uint16
 
-	localWriteClosed bool
-	stopLocalRead    bool
-	deferredClose    bool
-	deferredReason   string
-	deferredDeadline time.Time
-	deferredPacket   uint8
-	waitingAck       bool
-	waitingAckFor    uint8
-	ackWaitDeadline  time.Time
+	localWriteClosed  bool
+	localWritePending bool
+	stopLocalRead     bool
+	deferredClose     bool
+	deferredReason    string
+	deferredDeadline  time.Time
+	deferredPacket    uint8
+	waitingAck        bool
+	waitingAckFor     uint8
+	ackWaitDeadline   time.Time
 
 	// Backpressure
 	windowSize    int
@@ -575,7 +576,11 @@ func (a *ARQ) clearTrackedControlPacket(packetType uint8, sequenceNum uint16, fr
 func (a *ARQ) tryFinalizeRemoteEOF() {
 	a.mu.Lock()
 	waitingForFinAck := a.waitingAck && a.waitingAckFor == Enums.PACKET_STREAM_FIN
-	shouldClose := !a.closed && a.finReceived && (a.finAcked || (a.finSent && !waitingForFinAck))
+	shouldClose := !a.closed &&
+		a.finReceived &&
+		len(a.rcvBuf) == 0 &&
+		!a.localWritePending &&
+		(a.finAcked || (a.finSent && !waitingForFinAck))
 	a.mu.Unlock()
 
 	if shouldClose {
@@ -1030,10 +1035,12 @@ func (a *ARQ) writeLoop() {
 				delete(a.rcvBuf, a.rcvNxt)
 				a.rcvNxt++
 			}
+			a.localWritePending = len(toWrite) > 0
 			conn := a.localConn
 			a.mu.Unlock()
 
 			if len(toWrite) == 0 {
+				a.tryFinalizeRemoteEOF()
 				break
 			}
 
@@ -1080,6 +1087,11 @@ func (a *ARQ) writeLoop() {
 					return
 				}
 			}
+
+			a.mu.Lock()
+			a.localWritePending = false
+			a.mu.Unlock()
+			a.tryFinalizeRemoteEOF()
 		}
 	}
 }

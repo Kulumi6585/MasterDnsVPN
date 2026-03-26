@@ -129,8 +129,8 @@ func newTransientOpError(op string) error {
 }
 
 type transientReadConn struct {
-	mu       sync.Mutex
-	closed   bool
+	mu     sync.Mutex
+	closed bool
 }
 
 func (c *transientReadConn) Read(_ []byte) (int, error) {
@@ -175,6 +175,51 @@ func (c *transientWriteConn) Close() error {
 	c.mu.Lock()
 	c.closed = true
 	c.mu.Unlock()
+	return nil
+}
+
+type blockingWriteConn struct {
+	mu      sync.Mutex
+	writeCh chan []byte
+	release chan struct{}
+	writes  [][]byte
+	closed  bool
+}
+
+func newBlockingWriteConn() *blockingWriteConn {
+	return &blockingWriteConn{
+		writeCh: make(chan []byte, 1),
+		release: make(chan struct{}),
+	}
+}
+
+func (c *blockingWriteConn) Read(_ []byte) (int, error) {
+	time.Sleep(50 * time.Millisecond)
+	return 0, timeoutOnlyError{}
+}
+
+func (c *blockingWriteConn) Write(p []byte) (int, error) {
+	payload := append([]byte(nil), p...)
+	select {
+	case c.writeCh <- payload:
+	default:
+	}
+	<-c.release
+	c.mu.Lock()
+	c.writes = append(c.writes, payload)
+	c.mu.Unlock()
+	return len(p), nil
+}
+
+func (c *blockingWriteConn) Close() error {
+	c.mu.Lock()
+	c.closed = true
+	c.mu.Unlock()
+	select {
+	case <-c.release:
+	default:
+		close(c.release)
+	}
 	return nil
 }
 
@@ -817,6 +862,46 @@ func TestARQ_PeerFinHalfCloseStillAcceptsInboundData(t *testing.T) {
 	}
 	if !bytes.Equal(buf[:n], payload) {
 		t.Fatalf("expected payload %q, got %q", payload, buf[:n])
+	}
+}
+
+func TestARQ_FinHandshakeWaitsForInboundWriteDrain(t *testing.T) {
+	enqueuer := NewMockPacketEnqueuer()
+	cfg := Config{
+		WindowSize:               100,
+		RTO:                      0.1,
+		MaxRTO:                   0.5,
+		EnableControlReliability: true,
+	}
+
+	conn := newBlockingWriteConn()
+	a := NewARQ(1, 1, enqueuer, conn, 1000, &testLogger{t}, cfg)
+	a.Start()
+	defer a.Close("test end", CloseOptions{Force: true})
+
+	a.ReceiveData(0, []byte("buffered before fin"))
+
+	select {
+	case <-conn.writeCh:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for local write to start")
+	}
+
+	a.MarkFinReceived()
+	a.markFinAcked()
+	a.tryFinalizeRemoteEOF()
+
+	time.Sleep(100 * time.Millisecond)
+	if a.IsClosed() {
+		t.Fatal("stream should not finalize FIN handshake while local write is still in flight")
+	}
+
+	close(conn.release)
+
+	select {
+	case <-a.Done():
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected FIN handshake to complete after inbound write drain")
 	}
 }
 
