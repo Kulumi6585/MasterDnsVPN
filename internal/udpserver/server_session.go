@@ -326,6 +326,11 @@ func (s *Server) dequeueSessionResponse(sessionID uint8, now time.Time) (*VpnPro
 				return Enums.PacketIdentityKey(uint16(id), p.PacketType, p.SequenceNum, p.FragmentID)
 			})
 			if ok {
+				if (popped.PacketType == Enums.PACKET_STREAM_DATA || popped.PacketType == Enums.PACKET_STREAM_RESEND) &&
+					stream.ARQ != nil && !stream.ARQ.HasPendingSequence(popped.SequenceNum) {
+					putTXPacketToPool(popped)
+					continue
+				}
 				item = popped
 				selectedStreamID = uint16(id)
 			}
