@@ -495,6 +495,12 @@ func updateAdaptiveRTO(state adaptiveRTOState, sample, minRTO, maxRTO time.Durat
 	return state
 }
 
+const (
+	dataRetransmitRTOGrowthFactor    = 1.35
+	controlRetransmitRTOGrowthFactor = 1.25
+	setupControlRTOGrowthFactor      = 1.15
+)
+
 // ---------------------------------------------------------------------
 // Flow Control & Shared State Helpers
 // ---------------------------------------------------------------------
@@ -1649,7 +1655,7 @@ func (a *ARQ) checkRetransmits() {
 			info.LastSentAt = now
 			info.Retries++
 			info.SampleEligible = false
-			grownRTO := time.Duration(float64(info.CurrentRTO) * 1.2)
+			grownRTO := time.Duration(float64(info.CurrentRTO) * dataRetransmitRTOGrowthFactor)
 			info.CurrentRTO = clampDuration(grownRTO, dataFloor, a.maxRTO)
 		}
 		a.mu.Unlock()
@@ -1845,11 +1851,11 @@ func (a *ARQ) checkControlRetransmits(now time.Time) {
 		info.LastSentAt = now
 		info.Retries++
 		info.SampleEligible = false
-		growth := 1.2
+		growth := controlRetransmitRTOGrowthFactor
 		floorRto := a.currentControlBaseRTO()
 
 		if setupControlPacketTypes[info.PacketType] {
-			growth = 1.1
+			growth = setupControlRTOGrowthFactor
 			altFloor := 350 * time.Millisecond
 			if altFloor < floorRto {
 				floorRto = altFloor
