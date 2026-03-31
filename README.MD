@@ -411,7 +411,7 @@ These settings are critical on the server:
 
 | Parameter | Sample Value | Allowed Values / Real Behavior | Full Explanation |
 | :--- | :--- | :--- | :--- |
-| `LISTEN_IP` | `"127.0.0.1"` | Valid IP string | Address where the client listens for local proxy users.<br>Use `127.0.0.1` for local-only usage.<br>Use `0.0.0.0` only if you want to share the proxy on the network and understand the security implications. |
+| `LISTEN_IP` | `"127.0.0.1"` | Valid IP string | Address where the client listens for local proxy users.<br>Use `127.0.0.1` for normal local-only usage.<br>If some applications prefer IPv6 localhost on your system, using `localhost` can be a better local-only choice.<br>Use `0.0.0.0` only if you want to share the proxy on the network and understand the security implications. |
 | `LISTEN_PORT` | `18000` | `0..65535` | Port for the local proxy.<br>Your applications must use this port to send traffic into the tunnel. |
 | `SOCKS5_AUTH` | `false` | `true/false` | Enables username/password authentication on the local SOCKS5 proxy.<br>If you bind to `0.0.0.0`, enabling this is strongly recommended. |
 | `SOCKS5_USER` | `"master_dns_vpn"` | Up to 255 bytes | Username for the local SOCKS5 proxy.<br>Used only if `SOCKS5_AUTH=true`. |

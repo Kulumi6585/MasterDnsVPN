@@ -47,6 +47,11 @@ ENCRYPTION_KEY = ""
 PROTOCOL_TYPE = "SOCKS5"
 
 # Local bind address for the client proxy.
+# For local-only use, "127.0.0.1" is fine.
+# On systems where apps prefer IPv6 localhost (for example some macOS setups),
+# "localhost" can be a better choice.
+# If you want other devices on your network to use this proxy, use "0.0.0.0"
+# and enable SOCKS5_AUTH.
 LISTEN_IP = "127.0.0.1"
 LISTEN_PORT = 18000
 
