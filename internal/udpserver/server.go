@@ -70,7 +70,6 @@ type Server struct {
 	streamOutboundTTL        time.Duration
 	streamOutboundMaxRetry   int
 	mtuProbePayloadPool      sync.Pool
-	mtuProbeFillPattern      [256]byte
 	packetPool               sync.Pool
 	deferredInflightMu       sync.Mutex
 	deferredInflight         map[uint64]struct{}
@@ -158,8 +157,7 @@ func New(cfg config.ServerConfig, log *logger.Logger, codec *security.Codec) *Se
 				return make([]byte, mtuProbeMaxDownSize)
 			},
 		},
-		mtuProbeFillPattern: buildMTUProbeFillPattern(),
-		deferredInflight:    make(map[uint64]struct{}, 128),
+		deferredInflight: make(map[uint64]struct{}, 128),
 		packetPool: sync.Pool{
 			New: func() any {
 				return make([]byte, cfg.MaxPacketSize)

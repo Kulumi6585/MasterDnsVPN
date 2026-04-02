@@ -27,6 +27,10 @@ func (c *Client) runtimePacketDuplicationCount(packetType uint8) int {
 		}
 	}
 
+	if packetType == Enums.PACKET_PING {
+		return min(count, 2)
+	}
+
 	return count
 }
 
