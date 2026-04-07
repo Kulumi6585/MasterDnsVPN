@@ -12,7 +12,6 @@ package client
 import (
 	"encoding/binary"
 	"net"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -69,6 +68,11 @@ type balancerTimeoutObservation struct {
 	at        time.Time
 }
 
+type balancerPendingShard struct {
+	mu      sync.Mutex
+	pending map[balancerResolverSampleKey]balancerResolverSample
+}
+
 type Balancer struct {
 	strategy         int
 	rrCounter        atomic.Uint64
@@ -76,6 +80,8 @@ type Balancer struct {
 	rngState         atomic.Uint64
 	nextPendingSweep atomic.Int64
 	pendingOverflow  atomic.Bool
+	pendingSize      atomic.Int32
+	pendingEvictRR   atomic.Uint32
 
 	mu           sync.RWMutex
 	log          *logger.Logger
@@ -86,8 +92,7 @@ type Balancer struct {
 	stats        []*connectionStats
 	streamRoutes map[uint16]*balancerStreamRouteState
 
-	pendingMu sync.Mutex
-	pending   map[balancerResolverSampleKey]balancerResolverSample
+	pendingShards [resolverPendingShardCount]balancerPendingShard
 
 	streamFailoverThreshold int
 	streamFailoverCooldown  time.Duration
@@ -116,9 +121,11 @@ func NewBalancer(strategy int, log *logger.Logger) *Balancer {
 		strategy:                strategy,
 		log:                     log,
 		streamRoutes:            make(map[uint16]*balancerStreamRouteState),
-		pending:                 make(map[balancerResolverSampleKey]balancerResolverSample),
 		streamFailoverThreshold: 1,
 		streamFailoverCooldown:  time.Second,
+	}
+	for i := range b.pendingShards {
+		b.pendingShards[i].pending = make(map[balancerResolverSampleKey]balancerResolverSample)
 	}
 	b.rngState.Store(seedRNG())
 	return b
@@ -166,14 +173,18 @@ func (b *Balancer) SetConnections(connections []*Connection) {
 	b.activeIDs = make([]int, 0, size)
 	b.inactiveIDs = make([]int, 0, size)
 	b.stats = make([]*connectionStats, 0, size)
-	b.pendingMu.Lock()
-	if b.pending == nil {
-		b.pending = make(map[balancerResolverSampleKey]balancerResolverSample)
-	} else {
-		clear(b.pending)
+	for i := range b.pendingShards {
+		shard := &b.pendingShards[i]
+		shard.mu.Lock()
+		if shard.pending == nil {
+			shard.pending = make(map[balancerResolverSampleKey]balancerResolverSample)
+		} else {
+			clear(shard.pending)
+		}
+		shard.mu.Unlock()
 	}
-	b.pendingMu.Unlock()
 	b.pendingOverflow.Store(false)
+	b.pendingSize.Store(0)
 
 	if b.streamRoutes == nil {
 		b.streamRoutes = make(map[uint16]*balancerStreamRouteState)
@@ -431,25 +442,29 @@ func (b *Balancer) TrackResolverSend(
 
 	requestTimeout := resolverRequestTimeout(tunnelPacketTimeout, checkInterval, window)
 
-	b.pendingMu.Lock()
-	_, exists := b.pending[key]
-	if len(b.pending) >= resolverPendingSoftCap {
-		b.pendingOverflow.Store(true)
-		b.setNextPendingSweepLocked(sentAt)
-		if len(b.pending) >= resolverPendingHardCap {
-			extra := len(b.pending) - resolverPendingHardCap
-			if !exists {
-				extra++
-			}
-			b.evictSomePendingLocked(extra)
+	if b.pendingSize.Load() >= resolverPendingHardCap {
+		extra := int(b.pendingSize.Load()) - resolverPendingHardCap + 1
+		if extra > 0 {
+			b.evictSomePendingGlobal(extra)
 		}
 	}
-	b.pending[key] = balancerResolverSample{
+
+	shard := b.pendingShardForKey(key)
+	shard.mu.Lock()
+	_, exists := shard.pending[key]
+	if int(b.pendingSize.Load()) >= resolverPendingSoftCap {
+		b.pendingOverflow.Store(true)
+		b.setNextPendingSweepLocked(sentAt)
+	}
+	shard.pending[key] = balancerResolverSample{
 		serverKey: serverKey,
 		sentAt:    sentAt,
 	}
+	if !exists {
+		b.pendingSize.Add(1)
+	}
 	b.schedulePendingSweepAt(sentAt.Add(requestTimeout))
-	b.pendingMu.Unlock()
+	shard.mu.Unlock()
 
 	b.ReportSend(serverKey)
 	if stats := b.statsForKey(serverKey); stats != nil {
@@ -479,12 +494,14 @@ func (b *Balancer) TrackResolverSuccess(
 		dnsID:        binary.BigEndian.Uint16(packet[:2]),
 	}
 
-	b.pendingMu.Lock()
-	sample, ok := b.pending[key]
+	shard := b.pendingShardForKey(key)
+	shard.mu.Lock()
+	sample, ok := shard.pending[key]
 	if ok {
-		delete(b.pending, key)
+		delete(shard.pending, key)
+		b.pendingSize.Add(-1)
 	}
-	b.pendingMu.Unlock()
+	shard.mu.Unlock()
 
 	if !ok || sample.serverKey == "" {
 		return
@@ -522,12 +539,14 @@ func (b *Balancer) TrackResolverFailure(
 		dnsID:        binary.BigEndian.Uint16(packet[:2]),
 	}
 
-	b.pendingMu.Lock()
-	sample, ok := b.pending[key]
+	shard := b.pendingShardForKey(key)
+	shard.mu.Lock()
+	sample, ok := shard.pending[key]
 	if ok {
-		delete(b.pending, key)
+		delete(shard.pending, key)
+		b.pendingSize.Add(-1)
 	}
-	b.pendingMu.Unlock()
+	shard.mu.Unlock()
 
 	if !ok || sample.serverKey == "" || sample.timedOut || !autoDisable {
 		return
@@ -559,14 +578,29 @@ func (b *Balancer) CollectExpiredResolverTimeouts(
 
 	requestTimeout := resolverRequestTimeout(tunnelPacketTimeout, checkInterval, window)
 	ttl := resolverSampleTTL(tunnelPacketTimeout)
-
-	b.pendingMu.Lock()
-	timeoutObservations, nextDue := b.prunePendingLocked(now, requestTimeout, ttl)
-	if overflow := len(b.pending) - resolverPendingHardCap; overflow >= 0 {
-		b.evictPendingLocked(overflow + 1)
+	var (
+		timeoutObservations []balancerTimeoutObservation
+		nextDue             time.Time
+	)
+	for i := range b.pendingShards {
+		shard := &b.pendingShards[i]
+		shard.mu.Lock()
+		observations, shardNextDue, removedCount := b.prunePendingLocked(shard.pending, now, requestTimeout, ttl)
+		if removedCount > 0 {
+			b.pendingSize.Add(int32(-removedCount))
+		}
+		if len(observations) > 0 {
+			timeoutObservations = append(timeoutObservations, observations...)
+		}
+		if nextDue.IsZero() || (!shardNextDue.IsZero() && shardNextDue.Before(nextDue)) {
+			nextDue = shardNextDue
+		}
+		shard.mu.Unlock()
+	}
+	if overflow := int(b.pendingSize.Load()) - resolverPendingHardCap; overflow >= 0 {
+		b.evictSomePendingGlobal(overflow + 1)
 	}
 	b.setNextPendingSweepLocked(nextDue)
-	b.pendingMu.Unlock()
 	b.pendingOverflow.Store(false)
 
 	for _, observation := range timeoutObservations {
@@ -1110,8 +1144,9 @@ func normalizeRequiredCount(validCount, requiredCount, defaultIfInvalid int) int
 }
 
 const (
-	resolverPendingSoftCap = 8192
-	resolverPendingHardCap = 12288
+	resolverPendingSoftCap    = 8192
+	resolverPendingHardCap    = 12288
+	resolverPendingShardCount = 16
 )
 
 func resolverSampleTTL(tunnelPacketTimeout time.Duration) time.Duration {
@@ -1191,9 +1226,9 @@ func (b *Balancer) setNextPendingSweepLocked(next time.Time) {
 	b.nextPendingSweep.Store(next.UnixNano())
 }
 
-func (b *Balancer) prunePendingLocked(now time.Time, requestTimeout time.Duration, ttl time.Duration) ([]balancerTimeoutObservation, time.Time) {
-	if b == nil || len(b.pending) == 0 {
-		return nil, time.Time{}
+func (b *Balancer) prunePendingLocked(pending map[balancerResolverSampleKey]balancerResolverSample, now time.Time, requestTimeout time.Duration, ttl time.Duration) ([]balancerTimeoutObservation, time.Time, int) {
+	if b == nil || len(pending) == 0 {
+		return nil, time.Time{}, 0
 	}
 
 	timeoutBefore := now.Add(-requestTimeout)
@@ -1201,8 +1236,9 @@ func (b *Balancer) prunePendingLocked(now time.Time, requestTimeout time.Duratio
 	lateGrace := resolverLateResponseGrace(requestTimeout, ttl)
 	var timeoutObservations []balancerTimeoutObservation
 	var nextDue time.Time
+	removedCount := 0
 
-	for key, sample := range b.pending {
+	for key, sample := range pending {
 		if !sample.timedOut {
 			timeoutAt := sample.sentAt.Add(requestTimeout)
 			if !sample.sentAt.After(timeoutBefore) {
@@ -1212,7 +1248,7 @@ func (b *Balancer) prunePendingLocked(now time.Time, requestTimeout time.Duratio
 					sample.timedOutAt = now
 				}
 				sample.evictAfter = sample.timedOutAt.Add(lateGrace)
-				b.pending[key] = sample
+				pending[key] = sample
 				if sample.serverKey != "" {
 					timeoutObservations = append(timeoutObservations, balancerTimeoutObservation{
 						serverKey: sample.serverKey,
@@ -1223,17 +1259,20 @@ func (b *Balancer) prunePendingLocked(now time.Time, requestTimeout time.Duratio
 				nextDue = timeoutAt
 			}
 			if sample.sentAt.Before(absoluteCutoff) {
-				delete(b.pending, key)
+				delete(pending, key)
+				removedCount++
 			}
 			continue
 		}
 
 		if !sample.evictAfter.IsZero() && !sample.evictAfter.After(now) {
-			delete(b.pending, key)
+			delete(pending, key)
+			removedCount++
 			continue
 		}
 		if sample.sentAt.Before(absoluteCutoff) {
-			delete(b.pending, key)
+			delete(pending, key)
+			removedCount++
 			continue
 		}
 		evictAt := sample.evictAfter
@@ -1245,57 +1284,82 @@ func (b *Balancer) prunePendingLocked(now time.Time, requestTimeout time.Duratio
 		}
 	}
 
-	return timeoutObservations, nextDue
+	return timeoutObservations, nextDue, removedCount
 }
 
-func (b *Balancer) evictPendingLocked(evictCount int) {
-	if b == nil || evictCount <= 0 || len(b.pending) == 0 {
+func (b *Balancer) evictSomePendingGlobal(evictCount int) {
+	if b == nil || evictCount <= 0 {
 		return
 	}
-
-	type pendingEntry struct {
-		key    balancerResolverSampleKey
-		sample balancerResolverSample
-	}
-
-	entries := make([]pendingEntry, 0, len(b.pending))
-	for key, sample := range b.pending {
-		entries = append(entries, pendingEntry{key: key, sample: sample})
-	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].sample.timedOut != entries[j].sample.timedOut {
-			return entries[i].sample.timedOut
+	for evictCount > 0 {
+		removedAny := false
+		start := int(b.pendingEvictRR.Add(1)-1) % resolverPendingShardCount
+		for i := 0; i < resolverPendingShardCount && evictCount > 0; i++ {
+			shard := &b.pendingShards[(start+i)%resolverPendingShardCount]
+			shard.mu.Lock()
+			for key := range shard.pending {
+				delete(shard.pending, key)
+				b.pendingSize.Add(-1)
+				evictCount--
+				removedAny = true
+				break
+			}
+			shard.mu.Unlock()
 		}
-		if !entries[i].sample.sentAt.Equal(entries[j].sample.sentAt) {
-			return entries[i].sample.sentAt.Before(entries[j].sample.sentAt)
-		}
-		if entries[i].key.resolverAddr != entries[j].key.resolverAddr {
-			return entries[i].key.resolverAddr < entries[j].key.resolverAddr
-		}
-		return entries[i].key.dnsID < entries[j].key.dnsID
-	})
-
-	if evictCount > len(entries) {
-		evictCount = len(entries)
-	}
-	for i := 0; i < evictCount; i++ {
-		delete(b.pending, entries[i].key)
-	}
-}
-
-func (b *Balancer) evictSomePendingLocked(evictCount int) {
-	if b == nil || evictCount <= 0 || len(b.pending) == 0 {
-		return
-	}
-
-	for key := range b.pending {
-		delete(b.pending, key)
-		evictCount--
-		if evictCount <= 0 {
+		if !removedAny {
 			return
 		}
 	}
+}
+
+func (b *Balancer) pendingShardForKey(key balancerResolverSampleKey) *balancerPendingShard {
+	if b == nil {
+		return nil
+	}
+	idx := pendingShardIndex(key)
+	return &b.pendingShards[idx]
+}
+
+func pendingShardIndex(key balancerResolverSampleKey) int {
+	hash := uint32(key.dnsID)
+	for i := 0; i < len(key.resolverAddr); i++ {
+		hash = hash*33 + uint32(key.resolverAddr[i])
+	}
+	for i := 0; i < len(key.localAddr); i++ {
+		hash = hash*33 + uint32(key.localAddr[i])
+	}
+	return int(hash % resolverPendingShardCount)
+}
+
+func (b *Balancer) pendingCount() int {
+	if b == nil {
+		return 0
+	}
+	return int(b.pendingSize.Load())
+}
+
+func (b *Balancer) pendingStoreForTest(key balancerResolverSampleKey, sample balancerResolverSample) {
+	if b == nil {
+		return
+	}
+	shard := b.pendingShardForKey(key)
+	shard.mu.Lock()
+	if _, exists := shard.pending[key]; !exists {
+		b.pendingSize.Add(1)
+	}
+	shard.pending[key] = sample
+	shard.mu.Unlock()
+}
+
+func (b *Balancer) pendingLookupForTest(key balancerResolverSampleKey) (balancerResolverSample, bool) {
+	if b == nil {
+		return balancerResolverSample{}, false
+	}
+	shard := b.pendingShardForKey(key)
+	shard.mu.Lock()
+	sample, ok := shard.pending[key]
+	shard.mu.Unlock()
+	return sample, ok
 }
 
 func (b *Balancer) GetUniqueConnections(requiredCount int) []Connection {

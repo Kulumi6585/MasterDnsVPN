@@ -126,28 +126,24 @@ func TestTrackResolverSendBoundsResolverPendingGrowth(t *testing.T) {
 	c := createTestClient(t)
 	base := time.Now()
 
-	c.balancer.mu.Lock()
 	for i := 0; i < resolverPendingHardCap+32; i++ {
-		c.balancer.pending[balancerResolverSampleKey{
+		c.balancer.pendingStoreForTest(balancerResolverSampleKey{
 			resolverAddr: "127.0.0.1:5300",
 			dnsID:        uint16(i),
-		}] = balancerResolverSample{
+		}, balancerResolverSample{
 			serverKey: "resolver-a",
 			sentAt:    base.Add(-time.Minute),
-		}
+		})
 	}
-	c.balancer.mu.Unlock()
 
 	packet := []byte{0x12, 0x34}
 	c.balancer.TrackResolverSend(packet, "127.0.0.1:5300", "", "resolver-a", base, c.tunnelPacketTimeout)
 
-	c.balancer.mu.RLock()
-	pendingCount := len(c.balancer.pending)
-	_, inserted := c.balancer.pending[balancerResolverSampleKey{
+	pendingCount := c.balancer.pendingCount()
+	_, inserted := c.balancer.pendingLookupForTest(balancerResolverSampleKey{
 		resolverAddr: "127.0.0.1:5300",
 		dnsID:        binary.BigEndian.Uint16(packet),
-	}]
-	c.balancer.mu.RUnlock()
+	})
 
 	if pendingCount > resolverPendingHardCap {
 		t.Fatalf("expected resolverPending to stay bounded, got=%d hardCap=%d", pendingCount, resolverPendingHardCap)
@@ -386,12 +382,10 @@ func TestResolverHealthLoopCollectsResolverTimeoutsWhenAutoDisableEnabled(t *tes
 		1,
 	)
 
-	c.balancer.pendingMu.Lock()
-	c.balancer.pending[key] = balancerResolverSample{
+	c.balancer.pendingStoreForTest(key, balancerResolverSample{
 		serverKey: serverKey,
 		sentAt:    now.Add(-10 * time.Second),
-	}
-	c.balancer.pendingMu.Unlock()
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -399,9 +393,7 @@ func TestResolverHealthLoopCollectsResolverTimeoutsWhenAutoDisableEnabled(t *tes
 	go c.runResolverHealthLoop(ctx)
 
 	waitForResolverHealthCondition(t, 3*time.Second, func() bool {
-		c.balancer.pendingMu.Lock()
-		sample, ok := c.balancer.pending[key]
-		c.balancer.pendingMu.Unlock()
+		sample, ok := c.balancer.pendingLookupForTest(key)
 		return ok && sample.timedOut
 	}, "expected resolver timeout sample to be collected when auto-disable is enabled")
 }
@@ -420,18 +412,18 @@ func TestHandleInboundPacketTreatsMissingTXTAsResolverSuccess(t *testing.T) {
 	}
 
 	dnsID := binary.BigEndian.Uint16(response[:2])
-	c.balancer.pending[balancerResolverSampleKey{
+	c.balancer.pendingStoreForTest(balancerResolverSampleKey{
 		resolverAddr: addr.String(),
 		dnsID:        dnsID,
-	}] = balancerResolverSample{
+	}, balancerResolverSample{
 		serverKey: "a",
 		sentAt:    time.Now().Add(-200 * time.Millisecond),
-	}
+	})
 
 	c.handleInboundPacket(response, addr, "")
 
-	if len(c.balancer.pending) != 0 {
-		t.Fatalf("expected resolverPending to be cleared after empty DNS success, got=%d", len(c.balancer.pending))
+	if got := c.balancer.pendingCount(); got != 0 {
+		t.Fatalf("expected resolverPending to be cleared after empty DNS success, got=%d", got)
 	}
 }
 
@@ -453,18 +445,18 @@ func TestHandleInboundPacketTreatsServerFailureWithoutTXTAsResolverFailure(t *te
 	}
 
 	dnsID := binary.BigEndian.Uint16(response[:2])
-	c.balancer.pending[balancerResolverSampleKey{
+	c.balancer.pendingStoreForTest(balancerResolverSampleKey{
 		resolverAddr: addr.String(),
 		dnsID:        dnsID,
-	}] = balancerResolverSample{
+	}, balancerResolverSample{
 		serverKey: "a",
 		sentAt:    time.Now().Add(-200 * time.Millisecond),
-	}
+	})
 
 	c.handleInboundPacket(response, addr, "")
 
-	if len(c.balancer.pending) != 0 {
-		t.Fatalf("expected resolverPending to be cleared after SERVFAIL response, got=%d", len(c.balancer.pending))
+	if got := c.balancer.pendingCount(); got != 0 {
+		t.Fatalf("expected resolverPending to be cleared after SERVFAIL response, got=%d", got)
 	}
 	stats := c.balancer.statsForKey("a")
 	if stats == nil {

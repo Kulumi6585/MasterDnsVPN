@@ -61,6 +61,8 @@ func (c *Client) initializeSessionRequest() error {
 		return err
 	}
 
+	c.log.Infof("<green>Session init attempt with <cyan>%s</cyan> and resolver <cyan>%s</cyan>", conn.Domain, conn.Resolver)
+
 	query, err := c.buildSessionQuery(conn.Domain, Enums.PACKET_SESSION_INIT, initPayload)
 	if err != nil {
 		return ErrSessionInitFailed

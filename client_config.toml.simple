@@ -159,7 +159,7 @@ AUTO_DISABLE_TIMEOUT_WINDOW_SECONDS = 30.0
 
 # Minimum observations required before auto-disable can trigger.
 # Clamped to [1, 10000].
-AUTO_DISABLE_MIN_OBSERVATIONS = 100
+AUTO_DISABLE_MIN_OBSERVATIONS = 50
 
 # Frequency of auto-disable evaluation.
 # Clamped to [0.25s, 600s].
