@@ -139,6 +139,11 @@ func (b *Balancer) SetConnections(connections []*Connection) {
 	b.activeIDs = make([]int, 0, size)
 	b.inactiveIDs = make([]int, 0, size)
 	b.stats = make([]*connectionStats, 0, size)
+	if b.pending == nil {
+		b.pending = make(map[balancerResolverSampleKey]balancerResolverSample)
+	} else {
+		clear(b.pending)
+	}
 	if b.streamRoutes == nil {
 		b.streamRoutes = make(map[uint16]*balancerStreamRouteState)
 	} else {
