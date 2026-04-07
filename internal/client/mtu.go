@@ -184,11 +184,8 @@ func (c *Client) runResolverHealthLoop(ctx context.Context) {
 }
 
 func (c *Client) resolverHealthRecheckInterval() time.Duration {
-	interval := time.Duration(c.cfg.RecheckInactiveIntervalSeconds * float64(time.Second))
-	if interval <= 0 {
-		return 60 * time.Second
-	}
-	return interval
+	active, inactive, _ := c.resolverHealthCounts()
+	return resolverHealthPerResolverInterval(active, inactive)
 }
 
 func (c *Client) resolverHealthPollInterval(recheckInterval time.Duration) time.Duration {
@@ -211,10 +208,141 @@ func (c *Client) resolverHealthPollInterval(recheckInterval time.Duration) time.
 }
 
 func (c *Client) resolverHealthParallelism() int {
-	if c.cfg.RecheckBatchSize < 1 {
+	active, inactive, _ := c.resolverHealthCounts()
+	return resolverHealthBatchSize(active, inactive)
+}
+
+func (c *Client) resolverHealthCounts() (active int, inactive int, total int) {
+	if c == nil || c.balancer == nil {
+		return 0, 0, 0
+	}
+	active = c.balancer.ActiveCount()
+	total = c.balancer.TotalCount()
+	if total < active {
+		total = active
+	}
+	inactive = total - active
+	return active, inactive, total
+}
+
+func resolverHealthPerResolverInterval(active int, inactive int) time.Duration {
+	if inactive <= 0 {
+		return 12 * time.Second
+	}
+
+	interval := 6 * time.Second
+	switch {
+	case inactive <= 3:
+		interval = 12 * time.Second
+	case inactive <= 6:
+		interval = 10 * time.Second
+	case inactive <= 12:
+		interval = 8 * time.Second
+	case inactive <= 24:
+		interval = 6 * time.Second
+	case inactive <= 48:
+		interval = 5 * time.Second
+	case inactive <= 96:
+		interval = 4 * time.Second
+	default:
+		interval = 3 * time.Second
+	}
+
+	switch {
+	case active <= 3:
+		if interval < 12*time.Second {
+			interval = 12 * time.Second
+		}
+	case active <= 5:
+		if interval < 10*time.Second {
+			interval = 10 * time.Second
+		}
+	case active <= 10:
+		if interval < 8*time.Second {
+			interval = 8 * time.Second
+		}
+	case active >= 100 && inactive >= 40:
+		if interval > 2*time.Second {
+			interval = 2 * time.Second
+		}
+	case active >= 50 && inactive >= 20:
+		if interval > 3*time.Second {
+			interval = 3 * time.Second
+		}
+	}
+
+	if interval < 2*time.Second {
+		interval = 2 * time.Second
+	}
+	if interval > 12*time.Second {
+		interval = 12 * time.Second
+	}
+	return interval
+}
+
+func resolverHealthBatchSize(active int, inactive int) int {
+	if inactive <= 0 {
 		return 1
 	}
-	return c.cfg.RecheckBatchSize
+
+	batch := 2
+	switch {
+	case inactive <= 2:
+		batch = 1
+	case inactive <= 5:
+		batch = 2
+	case inactive <= 10:
+		batch = 3
+	case inactive <= 20:
+		batch = 4
+	case inactive <= 40:
+		batch = 6
+	case inactive <= 80:
+		batch = 8
+	case inactive <= 120:
+		batch = 10
+	case inactive <= 200:
+		batch = 12
+	default:
+		batch = 14
+	}
+
+	switch {
+	case active <= 3:
+		if batch > 2 {
+			batch = 2
+		}
+	case active <= 5:
+		if batch > 3 {
+			batch = 3
+		}
+	case active <= 10:
+		if batch > 4 {
+			batch = 4
+		}
+	case active >= 100 && inactive >= 40:
+		batch += 2
+	case active >= 50 && inactive >= 20:
+		batch++
+	}
+
+	if active >= 20 && inactive > 0 && inactive*4 < active && batch > 2 {
+		batch--
+	}
+
+	if batch < 1 {
+		batch = 1
+	}
+	if batch > 16 {
+		batch = 16
+	}
+	if batch > inactive {
+		batch = inactive
+	}
+	if batch < 1 {
+		batch = 1
+	}
+	return batch
 }
 
 func (c *Client) runResolverHealthBatch(ctx context.Context, recheckInterval time.Duration, parallelism int) {

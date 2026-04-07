@@ -50,8 +50,6 @@ type ClientConfig struct {
 	StreamResolverFailoverCooldownSec     float64           `toml:"STREAM_RESOLVER_FAILOVER_COOLDOWN"`
 	RecheckInactiveServersEnabled         bool              `toml:"RECHECK_INACTIVE_SERVERS_ENABLED"`
 	RecheckInactiveIntervalSeconds        float64           `toml:"RECHECK_INACTIVE_INTERVAL_SECONDS"`
-	RecheckServerIntervalSeconds          float64           `toml:"RECHECK_SERVER_INTERVAL_SECONDS"`
-	RecheckBatchSize                      int               `toml:"RECHECK_BATCH_SIZE"`
 	AutoDisableTimeoutServers             bool              `toml:"AUTO_DISABLE_TIMEOUT_SERVERS"`
 	AutoDisableTimeoutWindowSeconds       float64           `toml:"AUTO_DISABLE_TIMEOUT_WINDOW_SECONDS"`
 	BaseEncodeData                        bool              `toml:"BASE_ENCODE_DATA"`
@@ -81,10 +79,6 @@ type ClientConfig struct {
 	PingCoolThresholdSeconds              float64           `toml:"PING_COOL_THRESHOLD_SECONDS"`
 	PingColdThresholdSeconds              float64           `toml:"PING_COLD_THRESHOLD_SECONDS"`
 	RXChannelSize                         int               `toml:"RX_CHANNEL_SIZE"`
-	ResolverUDPConnectionPoolSize         int               `toml:"RESOLVER_UDP_CONNECTION_POOL_SIZE"`
-	StreamQueueInitialCapacity            int               `toml:"STREAM_QUEUE_INITIAL_CAPACITY"`
-	OrphanQueueInitialCapacity            int               `toml:"ORPHAN_QUEUE_INITIAL_CAPACITY"`
-	DNSResponseFragmentStoreCap           int               `toml:"DNS_RESPONSE_FRAGMENT_STORE_CAPACITY"`
 	DNSResponseFragmentTimeoutSeconds     float64           `toml:"DNS_RESPONSE_FRAGMENT_TIMEOUT_SECONDS"`
 	SOCKSUDPAssociateReadTimeoutSeconds   float64           `toml:"SOCKS_UDP_ASSOCIATE_READ_TIMEOUT_SECONDS"`
 	ClientTerminalStreamRetentionSeconds  float64           `toml:"CLIENT_TERMINAL_STREAM_RETENTION_SECONDS"`
@@ -157,8 +151,6 @@ func defaultClientConfig() ClientConfig {
 		StreamResolverFailoverCooldownSec:     1.0,
 		RecheckInactiveServersEnabled:         true,
 		RecheckInactiveIntervalSeconds:        1800.0,
-		RecheckServerIntervalSeconds:          3.0,
-		RecheckBatchSize:                      5,
 		AutoDisableTimeoutServers:             true,
 		AutoDisableTimeoutWindowSeconds:       180.0,
 		BaseEncodeData:                        false,
@@ -186,10 +178,6 @@ func defaultClientConfig() ClientConfig {
 		PingCoolThresholdSeconds:              10.0,
 		PingColdThresholdSeconds:              20.0,
 		RXChannelSize:                         4096,
-		ResolverUDPConnectionPoolSize:         64,
-		StreamQueueInitialCapacity:            128,
-		OrphanQueueInitialCapacity:            32,
-		DNSResponseFragmentStoreCap:           256,
 		DNSResponseFragmentTimeoutSeconds:     10.0,
 		SOCKSUDPAssociateReadTimeoutSeconds:   30.0,
 		ClientTerminalStreamRetentionSeconds:  45.0,
@@ -342,8 +330,6 @@ func finalizeClientConfig(cfg ClientConfig) (ClientConfig, error) {
 	cfg.StreamResolverFailoverResendThreshold = clampInt(defaultIntBelow(cfg.StreamResolverFailoverResendThreshold, 1, 2), 1, 128)
 	cfg.StreamResolverFailoverCooldownSec = clampFloat(defaultFloatAtMostZero(cfg.StreamResolverFailoverCooldownSec, 1.0), 0.1, 120.0)
 	cfg.RecheckInactiveIntervalSeconds = clampFloat(defaultFloatAtMostZero(cfg.RecheckInactiveIntervalSeconds, 1800.0), 60.0, 86400.0)
-	cfg.RecheckServerIntervalSeconds = clampFloat(defaultFloatAtMostZero(cfg.RecheckServerIntervalSeconds, 3.0), 1.0, 600.0)
-	cfg.RecheckBatchSize = clampInt(defaultIntBelow(cfg.RecheckBatchSize, 1, 5), 1, 1024)
 	cfg.AutoDisableTimeoutWindowSeconds = clampFloat(defaultFloatAtMostZero(cfg.AutoDisableTimeoutWindowSeconds, 180.0), 1.0, 86400.0)
 	cfg.MaxPacketsPerBatch = clampInt(defaultIntBelow(cfg.MaxPacketsPerBatch, 1, 10), 1, 64)
 	cfg.ARQWindowSize = clampInt(defaultIntBelow(cfg.ARQWindowSize, 1, 600), 1, 6000)
@@ -395,10 +381,6 @@ func finalizeClientConfig(cfg ClientConfig) (ClientConfig, error) {
 	cfg.PingCoolThresholdSeconds = clampFloat(defaultFloatAtMostZero(cfg.PingCoolThresholdSeconds, 10.0), cfg.PingWarmThresholdSeconds, 1800.0)
 	cfg.PingColdThresholdSeconds = clampFloat(defaultFloatAtMostZero(cfg.PingColdThresholdSeconds, 20.0), cfg.PingCoolThresholdSeconds, 3600.0)
 	cfg.RXChannelSize = clampInt(defaultIntBelow(cfg.RXChannelSize, 1, 4096), 64, 65536)
-	cfg.ResolverUDPConnectionPoolSize = clampInt(defaultIntBelow(cfg.ResolverUDPConnectionPoolSize, 1, 64), 1, 1024)
-	cfg.StreamQueueInitialCapacity = clampInt(defaultIntBelow(cfg.StreamQueueInitialCapacity, 1, 128), 8, 65536)
-	cfg.OrphanQueueInitialCapacity = clampInt(defaultIntBelow(cfg.OrphanQueueInitialCapacity, 1, 32), 4, 4096)
-	cfg.DNSResponseFragmentStoreCap = clampInt(defaultIntBelow(cfg.DNSResponseFragmentStoreCap, 1, 256), 16, 16384)
 	cfg.DNSResponseFragmentTimeoutSeconds = clampFloat(defaultFloatAtMostZero(cfg.DNSResponseFragmentTimeoutSeconds, 10.0), 1.0, 600.0)
 	cfg.SOCKSUDPAssociateReadTimeoutSeconds = clampFloat(defaultFloatAtMostZero(cfg.SOCKSUDPAssociateReadTimeoutSeconds, 30.0), 1.0, 3600.0)
 	cfg.ClientTerminalStreamRetentionSeconds = clampFloat(defaultFloatAtMostZero(cfg.ClientTerminalStreamRetentionSeconds, 45.0), 1.0, 3600.0)
