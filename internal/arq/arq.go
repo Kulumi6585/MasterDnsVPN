@@ -159,24 +159,24 @@ type ARQ struct {
 	rstAcked    bool
 	rstSeqSent  *uint16
 
-	localWriteClosed  bool
-	localWriterBroken bool
-	localWritePending bool
-	stopLocalRead     bool
-	deferredClose     bool
-	deferredReason    string
-	deferredDeadline  time.Time
-	deferredPacket    uint8
-	clientEOFAt       time.Time
-	closeReadAckedAt  time.Time
+	localWriteClosed   bool
+	localWriterBroken  bool
+	localWritePending  bool
+	stopLocalRead      bool
+	deferredClose      bool
+	deferredReason     string
+	deferredDeadline   time.Time
+	deferredPacket     uint8
+	clientEOFAt        time.Time
+	closeReadAckedAt   time.Time
 	lastDuplicateAckAt time.Time
-	waitingAck        bool
-	waitingAckFor     uint8
-	ackWaitDeadline   time.Time
-	drainProgressAt   time.Time
-	drainQueueFailAt  time.Time
-	drainQueueFails   int
-	drainStallLogged  bool
+	waitingAck         bool
+	waitingAckFor      uint8
+	ackWaitDeadline    time.Time
+	drainProgressAt    time.Time
+	drainQueueFailAt   time.Time
+	drainQueueFails    int
+	drainStallLogged   bool
 
 	IsClient bool
 
@@ -211,7 +211,6 @@ type ARQ struct {
 	// Virtual streams do not emit local close side effects.
 	isVirtual bool
 
-	dataNackMu        sync.Mutex
 	firstDataNackSeen map[uint16]time.Time
 	lastDataNackSent  map[uint16]time.Time
 
@@ -631,18 +630,23 @@ func (a *ARQ) isClosed() bool {
 }
 
 // clearAllQueues is used to wipe state instantly (RST / Abort semantics)
+// Caller must hold a.mu.
 func (a *ARQ) clearAllQueues(clearControl bool) {
 	a.sndBuf = make(map[uint16]*arqDataItem)
 	a.rcvBuf = make(map[uint16][]byte)
 	if clearControl {
 		a.controlSndBuf = make(map[uint32]*arqControlItem)
 	}
-	a.dataNackMu.Lock()
-	clear(a.firstDataNackSeen)
-	clear(a.lastDataNackSent)
-	a.dataNackMu.Unlock()
+	a.clearDataNackStateLocked()
 
 	a.signalWindowNotFull()
+}
+
+// clearDataNackStateLocked clears data NACK tracking maps.
+// Caller must hold a.mu.
+func (a *ARQ) clearDataNackStateLocked() {
+	clear(a.firstDataNackSeen)
+	clear(a.lastDataNackSent)
 }
 
 func (a *ARQ) clearOutboundStateLocked(clearControl bool) {
@@ -662,10 +666,7 @@ func (a *ARQ) clearOutboundStateLocked(clearControl bool) {
 	if clearControl {
 		a.controlSndBuf = make(map[uint32]*arqControlItem)
 	}
-	a.dataNackMu.Lock()
-	clear(a.firstDataNackSeen)
-	clear(a.lastDataNackSent)
-	a.dataNackMu.Unlock()
+	a.clearDataNackStateLocked()
 	a.signalWindowNotFull()
 }
 
@@ -1965,8 +1966,8 @@ func (a *ARQ) maybeSendDataNacks(sn uint16) {
 }
 
 func (a *ARQ) shouldSendDataNack(sn uint16, now time.Time) bool {
-	a.dataNackMu.Lock()
-	defer a.dataNackMu.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
 	firstSeenAt, exists := a.firstDataNackSeen[sn]
 	if !exists {
@@ -1985,16 +1986,16 @@ func (a *ARQ) shouldSendDataNack(sn uint16, now time.Time) bool {
 }
 
 func (a *ARQ) noteDataNackSent(sn uint16, now time.Time) {
-	a.dataNackMu.Lock()
+	a.mu.Lock()
 	a.lastDataNackSent[sn] = now
-	a.dataNackMu.Unlock()
+	a.mu.Unlock()
 }
 
 func (a *ARQ) clearSentDataNack(sn uint16) {
-	a.dataNackMu.Lock()
+	a.mu.Lock()
 	delete(a.firstDataNackSeen, sn)
 	delete(a.lastDataNackSent, sn)
-	a.dataNackMu.Unlock()
+	a.mu.Unlock()
 
 	if remover, ok := a.enqueuer.(queuedDataNackRemover); ok {
 		remover.RemoveQueuedDataNack(sn)
