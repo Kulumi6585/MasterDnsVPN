@@ -8,6 +8,7 @@
 package udpserver
 
 import (
+	"container/heap"
 	"context"
 	"net"
 	"strconv"
@@ -176,6 +177,34 @@ func New(cfg config.ServerConfig, log *logger.Logger, codec *security.Codec) *Se
 type throttledLogState struct {
 	mu   sync.Mutex
 	last map[string]int64
+	heap throttledLogHeap
+}
+
+type throttledLogEntry struct {
+	key  string
+	seen int64
+}
+
+type throttledLogHeap []throttledLogEntry
+
+func (h throttledLogHeap) Len() int { return len(h) }
+
+func (h throttledLogHeap) Less(i, j int) bool {
+	return h[i].seen < h[j].seen
+}
+
+func (h throttledLogHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h *throttledLogHeap) Push(x any) {
+	*h = append(*h, x.(throttledLogEntry))
+}
+
+func (h *throttledLogHeap) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[:n-1]
+	return item
 }
 
 const (
@@ -199,10 +228,6 @@ func (s *throttledLogState) allow(key string, now time.Time, interval time.Durat
 		s.last = make(map[string]int64, 64)
 	}
 
-	if len(s.last) > 0 {
-		s.pruneLocked(nowUnixNano, interval)
-	}
-
 	last := s.last[key]
 
 	if last != 0 && nowUnixNano-last < interval.Nanoseconds() {
@@ -210,6 +235,12 @@ func (s *throttledLogState) allow(key string, now time.Time, interval time.Durat
 	}
 
 	s.last[key] = nowUnixNano
+	heap.Push(&s.heap, throttledLogEntry{key: key, seen: nowUnixNano})
+
+	if len(s.last) > 0 {
+		s.pruneLocked(nowUnixNano, interval)
+	}
+
 	return true
 }
 
@@ -219,30 +250,27 @@ func (s *throttledLogState) pruneLocked(nowUnixNano int64, interval time.Duratio
 	}
 
 	cutoff := nowUnixNano - interval.Nanoseconds()
-	for key, last := range s.last {
-		if last == 0 || last <= cutoff {
-			delete(s.last, key)
+	for len(s.heap) > 0 {
+		entry := s.heap[0]
+		last, ok := s.last[entry.key]
+		if !ok || last != entry.seen {
+			heap.Pop(&s.heap)
+			continue
 		}
+		if entry.seen > cutoff && len(s.last) <= throttledLogHardCap {
+			break
+		}
+		delete(s.last, entry.key)
+		heap.Pop(&s.heap)
 	}
 
-	if len(s.last) <= throttledLogHardCap {
-		return
-	}
-
-	target := throttledLogSoftCap
-	for len(s.last) > target {
-		oldestKey := ""
-		oldestSeen := nowUnixNano
-		for key, last := range s.last {
-			if oldestKey == "" || last < oldestSeen {
-				oldestKey = key
-				oldestSeen = last
-			}
+	for len(s.last) > throttledLogSoftCap && len(s.heap) > 0 {
+		entry := heap.Pop(&s.heap).(throttledLogEntry)
+		last, ok := s.last[entry.key]
+		if !ok || last != entry.seen {
+			continue
 		}
-		if oldestKey == "" {
-			return
-		}
-		delete(s.last, oldestKey)
+		delete(s.last, entry.key)
 	}
 }
 
