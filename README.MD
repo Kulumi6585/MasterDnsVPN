@@ -11,22 +11,22 @@ This system is designed around compatibility with many resolver behaviors and ha
 | :--- | :--- | :--- | :--- |
 | Protocol type | Advanced DNS tunnel | Classic DNS tunnel | Advanced DNS tunnel / VPN |
 | Transport protocol | QUIC | KCP + Noise | Custom protocol + ARQ |
-| Transport header overhead | 🟠 ~24B | 🔴 ~59B | 🟢 ~5–7B (≈88% lower than DNSTT, ≈71% lower than SlipStream) |
+| Transport header overhead | 🟠 ~24B | 🔴 ~59B | 🟢 ~5–7B<br>≈88% lower than DNSTT<br>≈71% lower than SlipStream |
 | Encryption style | TLS 1.3 (inside QUIC) | Noise (Curve25519) | AES / ChaCha20 / XOR (if XOR is used: lightweight with lower security and no extra overhead) |
-| Architecture | Unified (QUIC handles everything) | Multi-layered (KCP + SMUX + Noise) | Lightweight custom design optimized for DNS |
-| Performance (speed) | 🟡 High (up to ~5× faster than DNSTT) | 🔴 Medium | 🟢 Works well in very poor conditions; faster than others in the same situation |
+| Architecture | Unified (QUIC handles everything) | Multi-layered (KCP + SMUX + Noise) | 🟢 Lightweight custom design optimized for DNS |
+| Speed | 🟡 High (up to ~5× faster than DNSTT) | 🔴 Medium | 🟢 Faster than others<br>Up to ~9× faster than DNSTT<br>Up to ~3.6× faster than SlipStream |
 | Stability under packet loss | 🟡 Good | 🟠 Medium | 🟢 Very high (Multipath + ARQ) |
 | Multi-resolver support | Yes (multipath) | ❌ | Yes — advanced (multi-resolver + duplication) |
 | Resilience under heavy censorship | Good | Medium | Very strong (a core project goal) |
-| Setup complexity | Medium | Simple | Simple by default, but highly configurable and therefore a bit more advanced |
-| SOCKS5 support | Yes | Yes | Optimized for SOCKS5 / SOCKS4 |
-| Shadowsocks support | ✅ | ❌ | Indirectly: TCP Forwarding mode can carry TCP-based protocols |
+| Setup complexity | Medium | Simple | Easier installation<br>More complex only if you heavily customize advanced settings |
+| SOCKS5 support | Yes | Yes | Optimized for SOCKS5 / SOCKS4 with reduced SOCKS overhead |
+| Shadowsocks support | ✅ | ❌ | Indirectly: TCP Forwarding mode can carry TCP-based protocols<br>e.g. Shadowsocks, VLESS/VMess, etc. |
 | Real multipath | Yes (QUIC multipath) | ❌ | Yes (multi-resolver + duplication) |
 | Adaptive routing | Limited | ❌ | Advanced (latency/loss based) |
 | Design goal | High speed and efficiency | Simplicity and stability | Surviving the harshest networks — stability, speed, and efficiency |
-| Implementation language | Rust | Go | Python and Go |
+| Implementation language | Rust | Go | Main version is Go<br>Legacy Python version also exists |
 | Built-in balancer | 🔴 | ❌ | 🟢 (8 built-in balancing modes) |
-| Duplication system | ❌ | ❌ | Yes — increases traffic to improve reliability (configurable) |
+| Duplication system | ❌ | ❌ | Yes — increases traffic to improve reliability (configurable or can be disabled) |
 | MTU tolerance | Better than DNSTT | - | Works even with very small MTU because protocol overhead is very low |
 | Failover system | ❌ | ❌ | ✅ |
 | Download speed 10MB (Local) | 🟡 0.978s | 🔴 2.492s | 🟢 0.270s |
@@ -829,6 +829,30 @@ sudo systemctl restart systemd-resolved
 ```
 
 > ⚠️ **Important warning:** You cannot run multiple DNS tunnel projects at the same time on the same server on port `53`.
+
+---
+
+### Section 5.3: Integrate with 3X-UI and use as an Outbound in other panels 🧩
+
+You can use the MasterDnsVPN client as a local proxy inside panels such as 3X-UI or any other system that supports local outbound proxies.
+Follow these steps:
+
+- Run the MasterDnsVPN client on the same server where your panel is running.
+- In 3X-UI, go to **Inbound** and create a new inbound (VLESS/VMess or any protocol you want).
+- Open **Xray Configs**, then go to the **Outbound** tab.
+- Click **Add Outbound** to create a new outbound.
+- Set **Protocol** to **Socks**.
+- Choose a tag (for example: `MasterDnsVPN-Out`).
+- In **Address**, enter the local IP of the MasterDnsVPN client (usually `127.0.0.1`).
+- In **Port**, enter the `LISTEN_PORT` you set in `client_config.toml` (for example `18000`).
+- If SOCKS authentication is enabled in MasterDnsVPN, enter the same username/password here.
+- Click **Add Outbound** to save it.
+- Go to the **Routing Rules** tab and click **Add Rule**.
+- In **Inbound Tags**, pick the inbound you created.
+- In **Outbound Tags**, select the `MasterDnsVPN-Out` tag.
+- Click **Save** and **Restart Xray**.
+
+Now all traffic for that inbound will go through MasterDnsVPN and exit via your DNS tunnel.
 
 ---
 
