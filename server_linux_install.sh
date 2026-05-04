@@ -166,6 +166,10 @@ if [[ -n "$TARGET_VERSION" && ! "$TARGET_VERSION" =~ ^[A-Za-z0-9._+-]+$ ]]; then
   exit 2
 fi
 
+if [[ -n "$TARGET_VERSION" ]]; then
+  log_info "Requested release tag: $TARGET_VERSION"
+fi
+
 if [[ "${EUID}" -ne 0 ]]; then
   log_error "Run this script as root (sudo)."
 fi
@@ -642,6 +646,7 @@ else
 fi
 ARCH="$(uname -m)"
 select_release_artifact "$ARCH" "$TARGET_VERSION"
+log_info "Download URL: $URL"
 
 if [[ -f "server_config.toml" ]]; then
   mv -f server_config.toml server_config.toml.backup
@@ -745,6 +750,10 @@ if [[ "$KEY_GENERATED" != true ]]; then
   done
   kill "$APP_PID" 2>/dev/null || true
   wait "$APP_PID" 2>/dev/null || true
+
+  if grep -q "Active Encryption Key" "$TMP_LOG" 2>/dev/null; then
+    READY=true
+  fi
 
   if [[ "$READY" == true ]]; then
     log_success "Key generated."
